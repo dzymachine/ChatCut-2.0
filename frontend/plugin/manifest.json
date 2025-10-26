@@ -27,6 +27,11 @@
       "domains": [
         "https://*.adobe.com"
       ]
+    },
+    "network": {
+      "domains": [
+        "localhost"
+      ]
     }
   },
   "entrypoints": [

@@ -3,6 +3,7 @@ import { Content } from "./content";
 import { Footer } from "./footer";
 import { Header } from "./header";
 import { applyZoom, applyTransition, applyFilter, applyRandomFilter, applyKeyframeDemo, applyTransitionDemo, applyFilterDemo, applyComprehensiveDemo } from "../services/editingActions";
+import { sendPing } from "../services/backendClient";
 
 const ppro = require("premierepro");
 
@@ -68,9 +69,9 @@ export const Container = () => {
 
   async function editClips(ppro, project, trackItems, text) {
     try {
+      const backendResponse = await sendPing(text);
+      writeToConsole(`Received Status: ${backendResponse.status}  Message: ${backendResponse.received}`);
       writeToConsole("Applying edits...");
-      
-      // Demo: apply zoom + transition + filter
       await applyComprehensiveDemo();
       
       writeToConsole("✅ Edits complete!");
