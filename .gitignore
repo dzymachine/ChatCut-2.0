@@ -54,9 +54,11 @@ backend/output/
 .swarm/
 .mcp.json
 
-# Root-level markdown files (except COLAB_GUIDE.md)
+# Root-level markdown files (except important docs)
 /*.md
+!README.md
 !COLAB_GUIDE.md
+!LICENSE.md
 
 # Test media files
 *.mp4
