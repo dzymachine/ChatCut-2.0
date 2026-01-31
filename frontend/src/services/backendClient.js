@@ -2,29 +2,6 @@
 // Note: UXP only allows domain names, not IP addresses for network requests
 const BACKEND_URL = "http://localhost:3001";
 
-export async function sendPing(message) {
-  try {
-    const response = await fetch(`${BACKEND_URL}/api/ping`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ message }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    console.log("[Backend] Ping response:", data);
-    return data;
-  } catch (err) {
-    console.error("[Backend] Error:", err.message);
-    throw err;
-  }
-}
-
 /**
  * Process user prompt through AI and get structured action
    * 
@@ -171,41 +148,6 @@ export async function processWithColab(filePath, prompt, colabUrl, effectType = 
       throw new Error("Backend server is not running. Please start the backend server on port 3001.");
     }
 
-    throw err;
-  }
-}
-
-/**
- * Process media file with object tracking
- * 
- * @param {string} filePath - Path to media file
- * @param {string} prompt - User's natural language request for object tracking
- * @returns {Promise<object>} Response with tracking data and actions
- */
-export async function processObjectTracking(filePath, prompt) {
-  try {
-    const response = await fetch(`${BACKEND_URL}/api/process-object-tracking`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ filePath, prompt }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    console.log("[Backend] Object tracking response:", data);
-    return data;
-  } catch (err) {
-    console.error("[Backend] Error processing object tracking:", err.message);
-    
-    if (err.message.includes("Network request failed") || err.message.includes("Failed to fetch")) {
-      throw new Error("Backend server is not running. Please start the backend server on port 3001.");
-    }
-    
     throw err;
   }
 }

@@ -350,20 +350,6 @@ export async function dispatchAction(actionName, trackItems, parameters = {}) {
 }
 
 /**
- * Get list of available actions
- */
-export function getAvailableActions() {
-  return Object.keys(actionRegistry);
-}
-
-/**
- * Check if an action exists
- */
-export function hasAction(actionName) {
-  return actionName in actionRegistry;
-}
-
-/**
  * Dispatch multiple actions sequentially.
  * actionsArray: [{ action: "applyFilter", parameters: {...} }, ...]
  * Returns aggregated results: { actions: [{action, result}], summary: {successful, failed} }

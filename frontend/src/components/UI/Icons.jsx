@@ -43,16 +43,3 @@ export const CloseIcon = (props) => (
   </IconWrapper>
 );
 
-export const CheckIcon = (props) => (
-  <IconWrapper {...props}>
-    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-  </IconWrapper>
-);
-
-export const ChevronDownIcon = (props) => (
-  <IconWrapper {...props}>
-    <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" />
-  </IconWrapper>
-);
-
-

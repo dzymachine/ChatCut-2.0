@@ -31,11 +31,11 @@ Run ChatCut's AI video effects on Google Colab's free GPU.
 ### Option A: Upload to Colab
 1. Go to [Google Colab](https://colab.research.google.com)
 2. Click **File > Upload notebook**
-3. Upload `chatcut_colab_server.ipynb`
+3. Upload `USETHISchatcut_colab_server.ipynb`
 
 ### Option B: VS Code + Colab Extension
 1. Install the **Colab** extension in VS Code
-2. Open `chatcut_colab_server.ipynb` in VS Code
+2. Open `USETHISchatcut_colab_server.ipynb` in VS Code
 3. Click **Connect** in the notebook toolbar
 4. Select a Colab runtime
 

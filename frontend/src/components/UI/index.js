@@ -6,9 +6,5 @@ export {
   SendIcon, 
   UndoIcon, 
   PlusIcon, 
-  CloseIcon, 
-  CheckIcon, 
-  ChevronDownIcon 
+  CloseIcon 
 } from "./Icons";
-
-
