@@ -8,7 +8,7 @@ import os
 from typing import Dict, Any
 
 from .ai_provider import AIProvider
-from .providers import GeminiProvider
+from .providers import GeminiProvider, GroqProvider
 
 # Provider factory - switch providers here
 _PROVIDER_INSTANCE: AIProvider = None
@@ -26,15 +26,24 @@ def _get_provider() -> AIProvider:
     # Always create new instance to pick up env changes (dotenv loads before this)
     if provider_type == "gemini":
         _PROVIDER_INSTANCE = GeminiProvider()
+    elif provider_type == "groq":
+        _PROVIDER_INSTANCE = GroqProvider()
     else:
-        raise ValueError(f"Unknown AI provider: {provider_type}. Set AI_PROVIDER env var.")
+        raise ValueError(f"Unknown AI provider: {provider_type}. Supported: gemini, groq")
     
     if not _PROVIDER_INSTANCE.is_configured():
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key or api_key == "your_gemini_api_key_here":
-            print(f"⚠️  WARNING: GEMINI_API_KEY not set. Please set GEMINI_API_KEY in .env file")
-        else:
-            print(f"⚠️  WARNING: Gemini provider configured but API key may be invalid. Key length: {len(api_key)}")
+        if provider_type == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key or api_key == "your_gemini_api_key_here":
+                print(f"⚠️  WARNING: GEMINI_API_KEY not set. Please set GEMINI_API_KEY in .env file")
+            else:
+                print(f"⚠️  WARNING: Gemini provider configured but API key may be invalid. Key length: {len(api_key)}")
+        elif provider_type == "groq":
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key or api_key == "your_groq_api_key_here":
+                print(f"⚠️  WARNING: GROQ_API_KEY not set. Please set GROQ_API_KEY in .env file")
+            else:
+                print(f"⚠️  WARNING: Groq provider configured but API key may be invalid. Key length: {len(api_key)}")
     
     return _PROVIDER_INSTANCE
 
