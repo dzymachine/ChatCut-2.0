@@ -83,7 +83,6 @@ class RedisCache:
             if cached_value:
                 self.stats["hits"] += 1
                 result = json.loads(cached_value)
-                ttl = self.client.ttl(cache_key)
                 print(f"[Cache] HIT ✓ ({self.stats['hits']} total)")
                 return result
             else:

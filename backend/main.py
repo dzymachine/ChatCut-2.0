@@ -267,49 +267,6 @@ async def health():
         "ai_provider": provider_info
     }
 
-@app.get("/api/cache/stats")
-async def get_cache_stats():
-    from services.ai_service import get_provider_info
-    """Get cache performance statistics"""
-    provider = get_provider_info()
-    return provider.cache.get_stats()
-
-@app.get("/api/cache/health")
-async def check_cache_health():
-    from services.ai_service import get_provider_info
-    """Check Redis health"""
-    provider = get_provider_info()
-    return provider.cache.health_check()
-
-@app.post("/api/cache/clear")
-async def clear_cache():
-    from services.ai_service import get_provider_info
-    """Clear all ChatCut cache (admin only)"""
-    provider = get_provider_info()
-    success = provider.cache.clear_all()
-    return {
-        "success": success,
-        "message": "Cache cleared" if success else "Cache clear failed"
-    }
-
-@app.post("/api/cache/invalidate")
-async def invalidate_prompt(request: dict):
-    from services.ai_service import get_provider_info
-    """Invalidate specific cached prompt"""
-    provider = get_provider_info()
-    prompt = request.get("prompt")
-    context = request.get("context_params")
-    
-    if not prompt:
-        return {"error": "prompt required"}
-    
-    success = provider.cache.delete(prompt, context)
-    return {
-        "success": success,
-        "message": "Prompt invalidated" if success else "Invalidation failed"
-    }
-
-
 if __name__ == "__main__":
     print("Starting ChatCut Backend on http://127.0.0.1:3001")
     uvicorn.run(app, host="127.0.0.1", port=3001)
