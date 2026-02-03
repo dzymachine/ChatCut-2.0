@@ -7,6 +7,7 @@ import os
 import json
 import time
 from typing import Dict, Any, Optional, List
+from .redis_cache import RedisCache
 
 try:
     import google.generativeai as genai
@@ -33,6 +34,7 @@ class GeminiProvider(AIProvider):
         # Or: gemini-2.0-flash-lite (even faster, lighter)
         self.model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
         self._configured = False
+        self.cache = RedisCache()
         
         if self.api_key and GEMINI_AVAILABLE:
             try:
@@ -62,6 +64,11 @@ class GeminiProvider(AIProvider):
                 error="API_KEY_MISSING"
             ).to_dict()
         
+        # Check cache
+        cached = self.cache.get(user_prompt, context_params)
+        if cached:
+            print("[Gemini] Cache hit")
+            return cached
         try:
             from .function_schemas import get_function_declarations, FUNCTION_CALLING_SYSTEM_PROMPT
             
@@ -187,13 +194,15 @@ class GeminiProvider(AIProvider):
                 
                 print(f"[Function Calling] Action: {action}, Parameters: {parameters}")
                 
-                return AIProviderResult.success(
+                result = AIProviderResult.success(
                     action=action,
                     parameters=parameters,
                     message=f"Executing {action}",
                     confidence=1.0
                 ).to_dict()
-            
+
+                self.cache.set(user_prompt, result, context_params)
+                return result
             # Multiple function calls
             actions = []
             for fc in function_calls:
