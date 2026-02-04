@@ -255,14 +255,16 @@ const actionRegistry = {
 
   /**
    * Apply audio filter/effect to audio clip(s)
-   * Parameters: { filterDisplayName }
+   * Parameters: { filterName } (or filterDisplayName for backwards compatibility)
+   * Use matchNames for cross-language support (e.g., "ADBE Studio Reverb" instead of "Reverb")
    */
   applyAudioFilter: async (trackItems, parameters = {}) => {
     const items = Array.isArray(trackItems) ? trackItems : [trackItems];
-    const { filterDisplayName } = parameters;
+    // Accept both filterName (new, preferred) and filterDisplayName (legacy)
+    const filterName = parameters.filterName || parameters.filterDisplayName;
     
-    if (!filterDisplayName) {
-      throw new Error("applyAudioFilter requires filterDisplayName parameter");
+    if (!filterName) {
+      throw new Error("applyAudioFilter requires filterName parameter");
     }
     
     let successful = 0;
@@ -270,7 +272,7 @@ const actionRegistry = {
     
     for (const item of items) {
       try {
-        const result = await applyAudioFilter(item, filterDisplayName);
+        const result = await applyAudioFilter(item, filterName);
         if (result) successful++;
         else failed++;
       } catch (err) {

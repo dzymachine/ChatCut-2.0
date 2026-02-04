@@ -4,6 +4,10 @@ Function Calling Schemas for Gemini API
 This module defines structured function declarations that replace
 the 600+ line system prompt. Each action maps 1:1 to the frontend's
 actionDispatcher.js registry.
+
+IMPORTANT: All effect and parameter names use Adobe's matchName identifiers,
+which are language-independent and work across all Premiere Pro locales.
+This ensures the plugin works for users regardless of their UI language.
 """
 
 # Available video filters (matchName values from Premiere Pro)
@@ -117,6 +121,69 @@ VIDEO_FILTERS = [
 ]
 
 # Available transitions (matchName values from Premiere Pro)
+# Common parameter matchNames for modifying effect settings
+# These are language-independent and work across all Premiere Pro locales
+EFFECT_PARAMETERS = {
+    # Gaussian Blur parameters
+    "ADBE Gaussian Blur 2-0001": "Blurriness (Gaussian Blur intensity)",
+    "ADBE Gaussian Blur 2-0002": "Blur Dimensions (Horizontal/Vertical/Both)",
+    "ADBE Gaussian Blur 2-0003": "Repeat Edge Pixels",
+    
+    # Mosaic parameters  
+    "ADBE Mosaic-0001": "Horizontal Blocks",
+    "ADBE Mosaic-0002": "Vertical Blocks",
+    "ADBE Mosaic-0003": "Sharp Colors",
+    
+    # Motion (built-in)
+    "ADBE Position": "Position",
+    "ADBE Scale": "Scale",
+    "ADBE Rotation": "Rotation",
+    "ADBE Anchor Point": "Anchor Point",
+    
+    # Opacity (built-in)
+    "ADBE Opacity": "Opacity",
+    
+    # Brightness & Contrast
+    "ADBE Brightness & Contrast 2-0001": "Brightness",
+    "ADBE Brightness & Contrast 2-0002": "Contrast",
+    
+    # Levels
+    "ADBE Levels-0001": "Input Black",
+    "ADBE Levels-0002": "Input White", 
+    "ADBE Levels-0003": "Gamma",
+    "ADBE Levels-0004": "Output Black",
+    "ADBE Levels-0005": "Output White",
+}
+
+# List of known parameter matchNames for enum validation
+PARAMETER_MATCHNAMES = list(EFFECT_PARAMETERS.keys())
+
+# Available audio filters (matchName values where known, display names as fallback)
+AUDIO_FILTERS = [
+    "ADBE Studio Reverb",
+    "ADBE Convolution Reverb",
+    "ADBE Parametric EQ",
+    "ADBE Graphic Equalizer 10",
+    "ADBE Graphic Equalizer 20",
+    "ADBE Graphic Equalizer 30",
+    "ADBE Adaptive Noise Reduction",
+    "ADBE DeNoise",
+    "ADBE DeEsser",
+    "ADBE Chorus Flanger",
+    "ADBE Delay",
+    "ADBE Multitap Delay",
+    "ADBE Analog Delay",
+    "ADBE Distortion",
+    "ADBE Multiband Compressor",
+    "ADBE Single-band Compressor",
+    "ADBE Tube-modeled Compressor",
+    "ADBE Hard Limiter",
+    "ADBE Phaser",
+    "ADBE Pitch Shifter",
+    "ADBE Dynamics",
+    "ADBE Channel Volume",
+]
+
 VIDEO_TRANSITIONS = [
     "ADBE Additive Dissolve",
     "ADBE Cross Zoom",
@@ -365,13 +432,13 @@ def get_function_declarations():
         },
         {
             "name": "modifyParameter",
-            "description": "Modify an effect parameter on a clip after an effect is applied. Use for requests like 'set blur to 100', 'change mosaic blocks to 20', 'animate opacity from 0 to 100'.",
+            "description": "Modify an effect parameter on a clip. Use matchNames for parameters (language-independent). Common: 'ADBE Gaussian Blur 2-0001' for blur, 'ADBE Mosaic-0001' for mosaic blocks, 'ADBE Opacity' for opacity.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "parameterName": {
                         "type": "string",
-                        "description": "Parameter name like 'Blurriness', 'Horizontal Blocks', 'Vertical Blocks', 'Opacity', 'Scale'"
+                        "description": "Parameter matchName (preferred) or readable name. matchNames: 'ADBE Gaussian Blur 2-0001' (blurriness), 'ADBE Mosaic-0001' (horizontal blocks), 'ADBE Mosaic-0002' (vertical blocks), 'ADBE Opacity' (opacity), 'ADBE Scale' (scale). Readable names like 'blurriness', 'opacity' also work."
                     },
                     "value": {
                         "type": "number",
@@ -400,7 +467,7 @@ def get_function_declarations():
                     },
                     "componentName": {
                         "type": "string",
-                        "description": "Effect name containing the parameter, e.g., 'Mosaic', 'Gaussian Blur'"
+                        "description": "Effect matchName containing the parameter, e.g., 'AE.ADBE Gaussian Blur 2', 'AE.ADBE Mosaic'"
                     }
                 },
                 "required": ["parameterName", "value"]
@@ -417,16 +484,16 @@ def get_function_declarations():
         },
         {
             "name": "applyAudioFilter",
-            "description": "Apply an audio effect/filter like reverb, EQ, or noise reduction.",
+            "description": "Apply an audio effect/filter like reverb, EQ, or noise reduction. Use matchNames when possible for cross-language support.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filterDisplayName": {
+                    "filterName": {
                         "type": "string",
-                        "description": "Audio filter name like 'Reverb', 'Parametric EQ', 'DeNoise', 'Dynamics'"
+                        "description": "Audio filter matchName (preferred) or readable name. matchNames: 'ADBE Studio Reverb' (reverb), 'ADBE Parametric EQ' (EQ), 'ADBE Adaptive Noise Reduction' (denoise), 'ADBE Dynamics' (dynamics), 'ADBE Hard Limiter' (limiter). Readable names like 'reverb', 'eq', 'delay' also work."
                     }
                 },
-                "required": ["filterDisplayName"]
+                "required": ["filterName"]
             }
         },
         {
