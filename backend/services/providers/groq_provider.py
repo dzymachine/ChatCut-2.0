@@ -19,7 +19,7 @@ import os
 import json
 import time
 from typing import Dict, Any, Optional, List
-
+from .redis_cache import RedisCache
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
@@ -45,7 +45,8 @@ class GroqProvider(AIProvider):
         self.model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         self._client = None
         self._configured = False
-        
+        self.cache = RedisCache()
+
         if self.api_key and GROQ_AVAILABLE:
             try:
                 self._client = Groq(api_key=self.api_key)
@@ -106,6 +107,12 @@ class GroqProvider(AIProvider):
                 message="Groq API not configured. Please set GROQ_API_KEY.",
                 error="API_KEY_MISSING"
             ).to_dict()
+        
+        # Check cache
+        cached = self.cache.get(user_prompt, context_params)
+        if cached:
+            print("[Groq] Cache hit")
+            return cached
         
         try:
             from .function_schemas import get_function_declarations, FUNCTION_CALLING_SYSTEM_PROMPT
@@ -220,12 +227,15 @@ class GroqProvider(AIProvider):
                     
                     print(f"[Groq] Action: {action}, Parameters: {parameters}")
                     
-                    return AIProviderResult.success(
+                    result = AIProviderResult.success(
                         action=action,
                         parameters=parameters,
                         message=f"Executing {action}",
                         confidence=1.0
                     ).to_dict()
+
+                    self.cache.set(user_prompt, result, context_params)
+                    return result
                 
                 # Multiple function calls
                 actions = []
