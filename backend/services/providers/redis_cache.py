@@ -5,7 +5,10 @@ Auto-configures with sensible defaults - no .env needed
 import os
 import json
 import hashlib
+import numpy as np
 from typing import Dict, Any, Optional
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 try:
     import redis
@@ -39,6 +42,10 @@ class RedisCache:
             "errors": 0,
             "evictions": 0
         }
+
+        self.similarity_threshold = 0.85  # Tunable cutoff
+        self._local_cache = []  # In-memory cache for similarity matching
+        self._max_local_cache_size = 100  # Keep 100 most recent prompts
         
         self._connect()
     
@@ -93,20 +100,86 @@ class RedisCache:
             self.stats["errors"] += 1
             # Silently fail - cache is optional
             return None
+        
+    def get_similar(self, prompt: str, context_params: Optional[Dict] = None) -> Optional[Dict]:
+        """
+        Find cached response for similar prompt using cosine similarity.
+        Falls back to exact match if no similarity match found.
+        """
+        # Try exact match first (fastest)
+        exact_hit = self.get(prompt, context_params)
+        if exact_hit:
+            print(f"[Cache] EXACT HIT")
+            return exact_hit
+        
+        # Try semantic similarity
+        if not self._local_cache or len(self._local_cache) < 2:
+            print(f"[Cache] Not enough entries for similarity check (need at least 2)")
+            return None
+        
+        try:
+            # Extract prompts from local cache
+            cached_prompts = [item["prompt"] for item in self._local_cache]
+            all_prompts = cached_prompts + [prompt]
+            
+            # Compute TF-IDF vectors (uses word/character n-grams)
+            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 3), lowercase=True)
+            tfidf_matrix = vectorizer.fit_transform(all_prompts)
+            
+            # Compare new prompt with all cached prompts
+            similarities = cosine_similarity(tfidf_matrix[-1], tfidf_matrix[:-1])[0]
+            print(f"[Cache] Similarities: {similarities}")
+            
+            # Find best match
+            best_idx = np.argmax(similarities)
+            best_similarity = similarities[best_idx]
+            
+            print(f"[Cache] Similarity check: {best_similarity:.2f} (threshold: {self.similarity_threshold})")
+            
+            if best_similarity >= self.similarity_threshold:
+                best_prompt = cached_prompts[best_idx]
+                print(f"[Cache] SEMANTIC HIT! '{prompt}' matches '{best_prompt}' ({best_similarity:.2f})")
+                
+                # Return cached response for the similar prompt
+                return self._local_cache[best_idx]["response"]
+            
+            return None
+            
+        except Exception as e:
+            print(f"[Cache] Similarity check error: {e}")
+            return None
     
     def set(self, prompt: str, response: Dict, context_params: Optional[Dict] = None) -> bool:
-        """Store response in cache with TTL (silently fails if Redis unavailable)"""
+        """Store response in Redis AND in local memory for similarity matching"""
+        
+        # Store in Redis
+        redis_stored = self._redis_set(prompt, response, context_params)
+        
+        # Also store in local cache for similarity matching
+        try:
+            if len(self._local_cache) >= self._max_local_cache_size:
+                self._local_cache.pop(0)  # Remove oldest
+            
+            self._local_cache.append({
+                "prompt": prompt,
+                "response": response,
+                "context": context_params
+            })
+        except Exception as e:
+            print(f"[Cache] Local cache write error: {e}")
+        
+        return redis_stored
+    
+    def _redis_set(self, prompt: str, response: Dict, context_params: Optional[Dict] = None) -> bool:
+        """Actual Redis write (extracted to separate method)"""
         if not self.is_available or not self.client:
             return False
-        
         try:
             cache_key = self._get_cache_key(prompt, context_params)
             serialized = json.dumps(response)
-            
             self.client.setex(cache_key, self.ttl_seconds, serialized)
             self.stats["writes"] += 1
             return True
-            
         except Exception as e:
             self.stats["errors"] += 1
             return False

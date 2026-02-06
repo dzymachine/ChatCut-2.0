@@ -24,13 +24,15 @@ def _get_provider() -> AIProvider:
     provider_type = os.getenv("AI_PROVIDER", "gemini").lower()
     
     # Always create new instance to pick up env changes (dotenv loads before this)
-    if provider_type == "gemini":
-        _PROVIDER_INSTANCE = GeminiProvider()
-    elif provider_type == "groq":
-        _PROVIDER_INSTANCE = GroqProvider()
-    else:
-        raise ValueError(f"Unknown AI provider: {provider_type}. Supported: gemini, groq")
-    
+
+    if _PROVIDER_INSTANCE is None:
+        if provider_type == "gemini":
+            _PROVIDER_INSTANCE = GeminiProvider()
+        elif provider_type == "groq":
+            _PROVIDER_INSTANCE = GroqProvider()
+        else:
+            raise ValueError(f"Unknown AI provider: {provider_type}. Supported: gemini, groq")
+        
     if not _PROVIDER_INSTANCE.is_configured():
         if provider_type == "gemini":
             api_key = os.getenv("GEMINI_API_KEY")
