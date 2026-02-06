@@ -7,9 +7,114 @@ import {
   logClipInfo 
 } from './clipUtils.js';
 
+// ============ MATCHNAME CONSTANTS ============
+// These are language-independent identifiers that work across all Premiere Pro locales
+// Effects
+const MATCHNAMES = {
+  // Effect matchNames
+  GAUSSIAN_BLUR: "AE.ADBE Gaussian Blur 2",
+  
+  // Parameter matchNames (patterns - actual matchName may include index suffix)
+  // These patterns are used to find parameters within effects
+  PARAMS: {
+    // Gaussian Blur parameters
+    BLURRINESS: "ADBE Gaussian Blur 2-0001",
+    BLUR_DIMENSIONS: "ADBE Gaussian Blur 2-0002",
+    REPEAT_EDGE_PIXELS: "ADBE Gaussian Blur 2-0003",
+    
+    // Audio parameters (common patterns)
+    GAIN: ["Gain", "ADBE Gain", "gain"],  // Multiple possible matchNames
+    VOLUME: ["Volume", "ADBE Volume", "Level", "level"],
+    
+    // Motion parameters
+    SCALE: "ADBE Scale",
+    POSITION: "ADBE Position",
+    ROTATION: "ADBE Rotation",
+    ANCHOR_POINT: "ADBE Anchor Point",
+    
+    // Opacity
+    OPACITY: "ADBE Opacity",
+  }
+};
+
+// Map user-friendly parameter names to matchName patterns for lookup
+// This allows the AI to use readable names while we search by matchName
+const PARAM_NAME_TO_MATCHNAME = {
+  // Blur
+  "blurriness": MATCHNAMES.PARAMS.BLURRINESS,
+  "blur": MATCHNAMES.PARAMS.BLURRINESS,
+  "blur amount": MATCHNAMES.PARAMS.BLURRINESS,
+  "blur dimensions": MATCHNAMES.PARAMS.BLUR_DIMENSIONS,
+  
+  // Motion
+  "scale": MATCHNAMES.PARAMS.SCALE,
+  "position": MATCHNAMES.PARAMS.POSITION,
+  "rotation": MATCHNAMES.PARAMS.ROTATION,
+  "anchor point": MATCHNAMES.PARAMS.ANCHOR_POINT,
+  "anchor": MATCHNAMES.PARAMS.ANCHOR_POINT,
+  
+  // Opacity
+  "opacity": MATCHNAMES.PARAMS.OPACITY,
+  
+  // Audio
+  "gain": MATCHNAMES.PARAMS.GAIN,
+  "volume": MATCHNAMES.PARAMS.VOLUME,
+  "level": MATCHNAMES.PARAMS.VOLUME,
+};
+
 // ============ UTILITY ============
 function log(msg, color = "white") {
   console.log(`[Edit][${color}] ${msg}`);
+}
+
+/**
+ * Find a parameter by matchName pattern
+ * @param {Component} component - The component to search in
+ * @param {string|string[]} matchNamePattern - The matchName or array of possible matchNames to find
+ * @returns {Promise<ComponentParam|null>}
+ */
+async function findParamByMatchName(component, matchNamePattern) {
+  const patterns = Array.isArray(matchNamePattern) ? matchNamePattern : [matchNamePattern];
+  const paramCount = await component.getParamCount();
+  
+  for (let pi = 0; pi < paramCount; pi++) {
+    try {
+      const param = await component.getParam(pi);
+      const matchName = await param.getMatchName();
+      
+      // Check if matchName matches any of the patterns (exact or contains)
+      for (const pattern of patterns) {
+        if (matchName === pattern || matchName.toLowerCase().includes(pattern.toLowerCase())) {
+          log(`Found param by matchName: ${matchName}`, "green");
+          return param;
+        }
+      }
+    } catch (err) {
+      // Continue searching
+    }
+  }
+  return null;
+}
+
+/**
+ * Find a parameter across all components by matchName pattern
+ * @param {ComponentChain} componentChain - The component chain to search
+ * @param {string|string[]} matchNamePattern - The matchName or array of possible matchNames
+ * @returns {Promise<ComponentParam|null>}
+ */
+async function findParamInChainByMatchName(componentChain, matchNamePattern) {
+  const compCount = await componentChain.getComponentCount();
+  
+  for (let ci = 0; ci < compCount; ci++) {
+    try {
+      const comp = await componentChain.getComponentAtIndex(ci);
+      const param = await findParamByMatchName(comp, matchNamePattern);
+      if (param) return param;
+    } catch (err) {
+      // Continue searching
+    }
+  }
+  return null;
 }
 
 async function executeAction(project, action) {
@@ -349,36 +454,58 @@ export async function applyBlur(trackItem, blurriness = 50) {
       return false;
     }
 
-    // Helper to find a param named "Blurriness" across all components
-    const findBlurrinessParam = async () => {
-      const compCount = componentChain.getComponentCount();
-      for (let ci = 0; ci < compCount; ci++) {
-        const comp = componentChain.getComponentAtIndex(ci);
-        const paramCount = comp.getParamCount();
-        for (let pi = 0; pi < paramCount; pi++) {
-          const param = await comp.getParam(pi);
-          const name = ((param && param.displayName) || "").trim().toLowerCase();
-          if (name === "blurriness") {
-            return param;
+    // Find blur parameter by matchName (language-independent)
+    // First, try to find an existing Gaussian Blur effect's Blurriness parameter
+    let blurParam = await findParamInChainByMatchName(
+      componentChain, 
+      MATCHNAMES.PARAMS.BLURRINESS
+    );
+
+    // If not found, append Gaussian Blur effect and search again
+    if (!blurParam) {
+      log(`Adding Gaussian Blur effect: ${MATCHNAMES.GAUSSIAN_BLUR}`, "blue");
+      const blurComponent = await ppro.VideoFilterFactory.createComponent(MATCHNAMES.GAUSSIAN_BLUR);
+      const appendAction = await componentChain.createAppendComponentAction(blurComponent);
+      await executeAction(project, appendAction);
+      
+      // Search again for the blur parameter
+      blurParam = await findParamInChainByMatchName(
+        componentChain, 
+        MATCHNAMES.PARAMS.BLURRINESS
+      );
+      
+      // Fallback: if matchName search fails, try searching by component matchName pattern
+      if (!blurParam) {
+        log("Searching for blur param by component pattern...", "blue");
+        const compCount = await componentChain.getComponentCount();
+        for (let ci = 0; ci < compCount; ci++) {
+          const comp = await componentChain.getComponentAtIndex(ci);
+          const compMatchName = await comp.getMatchName();
+          
+          // Look for Gaussian Blur component
+          if (compMatchName.includes("Gaussian Blur")) {
+            // Get first numeric parameter (typically the blur amount)
+            const paramCount = await comp.getParamCount();
+            for (let pi = 0; pi < paramCount; pi++) {
+              const param = await comp.getParam(pi);
+              const paramMatchName = await param.getMatchName();
+              log(`  Param ${pi}: ${paramMatchName} (display: ${param.displayName})`, "blue");
+              
+              // First parameter of Gaussian Blur is typically Blurriness
+              if (pi === 0 || paramMatchName.includes("0001")) {
+                blurParam = param;
+                log(`Found blur param via component search: ${paramMatchName}`, "green");
+                break;
+              }
+            }
+            if (blurParam) break;
           }
         }
       }
-      return null;
-    };
-
-    // Try to find existing "Blurriness"
-    let blurParam = await findBlurrinessParam();
-
-    // If not found, append Gaussian Blur and try again
-    if (!blurParam) {
-      const blurComponent = await ppro.VideoFilterFactory.createComponent("AE.ADBE Gaussian Blur 2");
-      const appendAction = await componentChain.createAppendComponentAction(blurComponent);
-      await executeAction(project, appendAction);
-      blurParam = await findBlurrinessParam();
     }
 
     if (!blurParam) {
-      log("Could not find Blurriness parameter", "yellow");
+      log("Could not find Blurriness parameter by matchName", "yellow");
       return false;
     }
 
@@ -493,15 +620,38 @@ export async function applyFilter(item, filterName) {
 
 // ============ AUDIO EFFECTS ============
 
+// Audio filter matchName mappings (language-independent)
+// Maps user-friendly terms to possible matchNames
+const AUDIO_FILTER_MATCHNAMES = {
+  'reverb': ['ADBE Studio Reverb', 'ADBE Convolution Reverb', 'ADBE Surround Reverb', 'AUReverb2', 'AUMatrixReverb'],
+  'eq': ['ADBE Parametric EQ', 'ADBE Simple Parametric EQ', 'ADBE Graphic Equalizer 10', 'ADBE Graphic Equalizer 20', 'ADBE Graphic Equalizer 30'],
+  'equalizer': ['ADBE Parametric EQ', 'ADBE Simple Parametric EQ', 'ADBE Graphic Equalizer 10'],
+  'parametric eq': ['ADBE Parametric EQ', 'ADBE Simple Parametric EQ'],
+  'noise reduction': ['ADBE Adaptive Noise Reduction', 'ADBE DeNoise'],
+  'denoise': ['ADBE Adaptive Noise Reduction', 'ADBE DeNoise'],
+  'deesser': ['ADBE DeEsser'],
+  'chorus': ['ADBE Chorus Flanger'],
+  'flanger': ['ADBE Chorus Flanger', 'ADBE Flanger'],
+  'delay': ['ADBE Delay', 'ADBE Multitap Delay', 'ADBE Analog Delay'],
+  'distortion': ['ADBE Distortion'],
+  'compressor': ['ADBE Multiband Compressor', 'ADBE Single-band Compressor', 'ADBE Tube-modeled Compressor'],
+  'limiter': ['ADBE Hard Limiter'],
+  'phaser': ['ADBE Phaser'],
+  'pitch': ['ADBE Pitch Shifter', 'AUPitch', 'AUNewPitch'],
+  'dynamics': ['ADBE Dynamics'],
+  'gain': ['ADBE Channel Volume', 'ADBE Gain'],
+  'volume': ['ADBE Channel Volume', 'ADBE Gain'],
+};
+
 /**
  * Apply an audio filter/effect to an audio clip
  * @param {AudioClipTrackItem} audioClip - The audio clip to apply effect to
- * @param {string} filterDisplayName - Display name of the audio filter (e.g., "Parametric EQ", "Reverb")
+ * @param {string} filterName - Filter name (matchName preferred, displayName as fallback)
  * @returns {Promise<boolean>}
  */
-export async function applyAudioFilter(audioClip, filterDisplayName) {
+export async function applyAudioFilter(audioClip, filterName) {
   try {
-    log(`Applying audio filter: ${filterDisplayName}`, "blue");
+    log(`Applying audio filter: ${filterName}`, "blue");
     
     const project = await ppro.Project.getActiveProject();
     if (!project) {
@@ -514,89 +664,109 @@ export async function applyAudioFilter(audioClip, filterDisplayName) {
       return false;
     }
 
-    // Get available audio filter display names
-    const displayNames = await ppro.AudioFilterFactory.getDisplayNames();
-    console.log("Available audio filters:", displayNames);
+    // Get available audio filter matchNames and displayNames
+    let matchNames = [];
+    let displayNames = [];
     
-    // Normalize the search term (lowercase, remove common words)
-    const normalizedSearch = filterDisplayName.toLowerCase().trim();
+    try {
+      matchNames = await ppro.AudioFilterFactory.getMatchNames();
+      log(`Available audio filter matchNames: ${matchNames.slice(0, 10).join(', ')}...`, "blue");
+    } catch (e) {
+      log(`getMatchNames not available for audio filters`, "yellow");
+    }
     
-    // Common name mappings (user-friendly names -> actual filter names)
-    const nameMappings = {
-      'reverb': ['Studio Reverb', 'Convolution Reverb', 'Surround Reverb', 'AUReverb2', 'AUMatrixReverb'],
-      'eq': ['Parametric Equalizer', 'Simple Parametric EQ', 'Graphic Equalizer (10 Bands)', 'Graphic Equalizer (20 Bands)', 'Graphic Equalizer (30 Bands)'],
-      'equalizer': ['Parametric Equalizer', 'Simple Parametric EQ', 'Graphic Equalizer (10 Bands)', 'Graphic Equalizer (20 Bands)', 'Graphic Equalizer (30 Bands)'],
-      'parametric eq': ['Parametric Equalizer', 'Simple Parametric EQ'],
-      'noise reduction': ['Adaptive Noise Reduction', 'DeNoise'],
-      'denoise': ['Adaptive Noise Reduction', 'DeNoise'],
-      'deesser': ['DeEsser'],
-      'chorus': ['Chorus/Flanger'],
-      'flanger': ['Chorus/Flanger', 'Flanger'],
-      'delay': ['Delay', 'Multitap Delay', 'Analog Delay'],
-      'distortion': ['Distortion'],
-      'compressor': ['Multiband Compressor', 'Single-band Compressor', 'Tube-modeled Compressor'],
-      'limiter': ['Hard Limiter'],
-      'phaser': ['Phaser'],
-      'pitch': ['Pitch Shifter', 'AUPitch', 'AUNewPitch'],
-    };
+    displayNames = await ppro.AudioFilterFactory.getDisplayNames();
+    console.log("Available audio filters (displayNames):", displayNames);
     
-    let matchingName = null;
+    const normalizedSearch = filterName.toLowerCase().trim();
+    let resolvedFilterName = null;
+    let useMatchName = false;
     
-    // First, try exact match (case-insensitive)
-    matchingName = displayNames.find(name => 
-      name.toLowerCase() === normalizedSearch
-    );
+    // Strategy 1: Direct matchName match (if input looks like a matchName)
+    if (matchNames.length > 0 && filterName.includes('ADBE')) {
+      const exactMatch = matchNames.find(mn => mn === filterName);
+      if (exactMatch) {
+        resolvedFilterName = exactMatch;
+        useMatchName = true;
+        log(`Direct matchName match: ${resolvedFilterName}`, "green");
+      }
+    }
     
-    // If not found, try name mappings
-    if (!matchingName && nameMappings[normalizedSearch]) {
-      const candidates = nameMappings[normalizedSearch];
+    // Strategy 2: Look up in our matchName mapping
+    if (!resolvedFilterName && AUDIO_FILTER_MATCHNAMES[normalizedSearch]) {
+      const candidates = AUDIO_FILTER_MATCHNAMES[normalizedSearch];
       for (const candidate of candidates) {
-        const found = displayNames.find(name => name === candidate);
-        if (found) {
-          matchingName = found;
-          break;
+        // Check if this matchName exists
+        if (matchNames.length > 0) {
+          const found = matchNames.find(mn => 
+            mn === candidate || mn.toLowerCase().includes(candidate.toLowerCase())
+          );
+          if (found) {
+            resolvedFilterName = found;
+            useMatchName = true;
+            log(`Matched "${filterName}" to matchName: ${resolvedFilterName}`, "blue");
+            break;
+          }
         }
       }
     }
     
-    // If still not found, try fuzzy matching (contains search term)
-    if (!matchingName) {
-      matchingName = displayNames.find(name => 
-        name.toLowerCase().includes(normalizedSearch) || 
-        normalizedSearch.includes(name.toLowerCase().split(' ')[0]) // Match first word
+    // Strategy 3: Fuzzy matchName search
+    if (!resolvedFilterName && matchNames.length > 0) {
+      resolvedFilterName = matchNames.find(mn => 
+        mn.toLowerCase().includes(normalizedSearch) ||
+        normalizedSearch.split(/\s+/).some(word => mn.toLowerCase().includes(word))
       );
+      if (resolvedFilterName) {
+        useMatchName = true;
+        log(`Fuzzy matchName match: ${resolvedFilterName}`, "blue");
+      }
     }
     
-    // If still not found, try partial word matching
-    if (!matchingName) {
-      const searchWords = normalizedSearch.split(/\s+/);
-      matchingName = displayNames.find(name => {
-        const nameLower = name.toLowerCase();
-        return searchWords.some(word => nameLower.includes(word));
-      });
+    // Strategy 4: Fall back to displayName matching (less reliable for non-English)
+    if (!resolvedFilterName) {
+      log(`No matchName found, falling back to displayName search`, "yellow");
+      
+      // Try exact displayName match
+      resolvedFilterName = displayNames.find(dn => 
+        dn.toLowerCase() === normalizedSearch
+      );
+      
+      // Try partial displayName match
+      if (!resolvedFilterName) {
+        resolvedFilterName = displayNames.find(dn => 
+          dn.toLowerCase().includes(normalizedSearch) ||
+          normalizedSearch.split(/\s+/).some(word => dn.toLowerCase().includes(word))
+        );
+      }
     }
     
-    if (!matchingName) {
-      log(`Audio filter not found: ${filterDisplayName}`, "red");
-      log(`Available filters: ${displayNames.join(', ')}`, "yellow");
-      log(`💡 Tip: Try using the exact filter name, or a common name like "reverb", "eq", "delay"`, "yellow");
+    if (!resolvedFilterName) {
+      log(`Audio filter not found: ${filterName}`, "red");
+      log(`Available matchNames: ${matchNames.slice(0, 10).join(', ')}...`, "yellow");
+      log(`Available displayNames: ${displayNames.slice(0, 10).join(', ')}...`, "yellow");
       return false;
     }
     
-    log(`Matched "${filterDisplayName}" to "${matchingName}"`, "blue");
+    log(`Resolved "${filterName}" to "${resolvedFilterName}" (matchName: ${useMatchName})`, "blue");
 
     // Create audio filter component
-    const audioFilterComponent = await ppro.AudioFilterFactory.createComponentByDisplayName(
-      matchingName,
-      audioClip
-    );
+    let audioFilterComponent;
+    if (useMatchName) {
+      audioFilterComponent = await ppro.AudioFilterFactory.createComponent(resolvedFilterName);
+    } else {
+      audioFilterComponent = await ppro.AudioFilterFactory.createComponentByDisplayName(
+        resolvedFilterName,
+        audioClip
+      );
+    }
 
     // Get audio component chain and append the filter
     const audioComponentChain = await audioClip.getComponentChain();
     const action = await audioComponentChain.createAppendComponentAction(audioFilterComponent);
     await executeAction(project, action);
 
-    log(`✅ Audio filter applied: ${matchingName}`, "green");
+    log(`✅ Audio filter applied: ${resolvedFilterName}`, "green");
     return true;
   } catch (err) {
     log(`Error applying audio filter: ${err}`, "red");
@@ -637,8 +807,15 @@ export async function adjustVolume(audioClip, volumeDb = 0) {
       return false;
     }
 
-    // Helper to find a Gain/Volume parameter across all components
-    const findGainParam = async () => {
+    // Find Gain/Volume parameter by matchName (language-independent)
+    // Common audio gain matchName patterns
+    const gainMatchPatterns = [
+      "Gain", "ADBE Gain", "gain", "Level", "level", "Volume", "volume",
+      "Channel Volume", "ADBE Channel Volume"
+    ];
+    
+    // Helper to find a Gain/Volume parameter across all components by matchName
+    const findGainParamByMatchName = async () => {
       const compCount = await audioComponentChain.getComponentCount();
       for (let ci = 0; ci < compCount; ci++) {
         try {
@@ -647,10 +824,15 @@ export async function adjustVolume(audioClip, volumeDb = 0) {
           for (let pi = 0; pi < paramCount; pi++) {
             try {
               const param = await comp.getParam(pi);
-              const displayName = ((param && param.displayName) || "").trim().toLowerCase();
-              // Look for gain/volume parameters (common names: "Gain", "Volume", "Level")
-              if (displayName === "gain" || displayName === "volume" || displayName === "level") {
-                return param;
+              const matchName = await param.getMatchName();
+              
+              // Check if matchName matches any known gain/volume pattern
+              for (const pattern of gainMatchPatterns) {
+                if (matchName === pattern || 
+                    matchName.toLowerCase().includes(pattern.toLowerCase())) {
+                  log(`Found gain param by matchName: ${matchName}`, "green");
+                  return param;
+                }
               }
             } catch (err) {
               // Continue searching
@@ -663,42 +845,85 @@ export async function adjustVolume(audioClip, volumeDb = 0) {
       return null;
     };
 
-    // Try to find existing Gain/Volume parameter
-    let gainParam = await findGainParam();
+    // Try to find existing Gain/Volume parameter by matchName
+    let gainParam = await findGainParamByMatchName();
 
     // If not found, try to add a "Gain" or "Volume" audio filter
     if (!gainParam) {
       try {
-        // Get available audio filter display names
-        const displayNames = await ppro.AudioFilterFactory.getDisplayNames();
-        log(`Available audio filters: ${displayNames.join(', ')}`, "blue");
+        // Get available audio filter matchNames and displayNames
+        // Note: Audio filters may only expose displayNames in the API
+        // We'll try matchNames first, then fall back to displayNames
+        let matchNames = [];
+        let displayNames = [];
         
-        // Try common names for gain/volume filters (case-insensitive match)
-        // Note: "Volume" might not be a filter - try "Channel Volume" or "Gain" instead
-        const gainFilterNames = ["Channel Volume", "Gain", "Hard Limiter", "Dynamics", "Volume"];
+        try {
+          matchNames = await ppro.AudioFilterFactory.getMatchNames();
+          log(`Available audio filter matchNames: ${matchNames.join(', ')}`, "blue");
+        } catch (e) {
+          log(`getMatchNames not available for audio filters, using displayNames`, "yellow");
+        }
+        
+        displayNames = await ppro.AudioFilterFactory.getDisplayNames();
+        log(`Available audio filter displayNames: ${displayNames.join(', ')}`, "blue");
+        
+        // Try to find a gain/volume filter by matchName first
+        const gainFilterMatchPatterns = [
+          "ADBE Channel Volume", "Channel Volume", "ADBE Gain", "Gain",
+          "ADBE Hard Limiter", "Hard Limiter", "ADBE Dynamics", "Dynamics"
+        ];
+        
         let gainFilterName = null;
+        let useMatchName = false;
         
-        for (const name of gainFilterNames) {
-          const matching = displayNames.find(dn => dn.toLowerCase() === name.toLowerCase());
-          if (matching) {
-            gainFilterName = matching;
-            break;
+        // Try matchNames first
+        if (matchNames.length > 0) {
+          for (const pattern of gainFilterMatchPatterns) {
+            const matching = matchNames.find(mn => 
+              mn === pattern || mn.toLowerCase().includes(pattern.toLowerCase())
+            );
+            if (matching) {
+              gainFilterName = matching;
+              useMatchName = true;
+              break;
+            }
+          }
+        }
+        
+        // Fall back to displayNames if no matchName found
+        // Note: This is less reliable for non-English locales, but some audio APIs
+        // only expose displayNames
+        if (!gainFilterName) {
+          const gainFilterDisplayNames = ["Channel Volume", "Gain", "Hard Limiter", "Dynamics", "Volume"];
+          for (const name of gainFilterDisplayNames) {
+            const matching = displayNames.find(dn => dn.toLowerCase() === name.toLowerCase());
+            if (matching) {
+              gainFilterName = matching;
+              break;
+            }
           }
         }
         
         if (!gainFilterName) {
-          log(`Could not find Gain/Volume filter. Available filters: ${displayNames.join(', ')}`, "yellow");
+          log(`Could not find Gain/Volume filter.`, "yellow");
           log("💡 Tip: Audio clips may have built-in volume. Try selecting clips that already have volume/gain effects applied.", "yellow");
           return false;
         }
 
         // Create and add the gain filter
-        log(`Adding audio filter: ${gainFilterName}`, "blue");
+        log(`Adding audio filter: ${gainFilterName} (useMatchName: ${useMatchName})`, "blue");
         try {
-          const gainFilter = await ppro.AudioFilterFactory.createComponentByDisplayName(
-            gainFilterName,
-            audioClip
-          );
+          let gainFilter;
+          if (useMatchName) {
+            // Use matchName if available (more reliable)
+            gainFilter = await ppro.AudioFilterFactory.createComponent(gainFilterName);
+          } else {
+            // Fall back to displayName
+            gainFilter = await ppro.AudioFilterFactory.createComponentByDisplayName(
+              gainFilterName,
+              audioClip
+            );
+          }
           const appendAction = await audioComponentChain.createAppendComponentAction(gainFilter);
           await executeAction(project, appendAction);
         } catch (err) {
@@ -707,8 +932,8 @@ export async function adjustVolume(audioClip, volumeDb = 0) {
           return false;
         }
         
-        // Search again for the gain parameter
-        gainParam = await findGainParam();
+        // Search again for the gain parameter by matchName
+        gainParam = await findGainParamByMatchName();
       } catch (err) {
         log(`Could not add Gain/Volume filter: ${err}`, "yellow");
         console.error("Error adding gain filter:", err);
@@ -1011,7 +1236,7 @@ export async function testZoom() {
 /**
  * Get all modifiable parameters from a clip's effects
  * @param {TrackItem} trackItem - The clip to inspect
- * @returns {Promise<Array>} Array of parameter info objects
+ * @returns {Promise<Array>} Array of parameter info objects with matchNames
  */
 export async function getEffectParameters(trackItem) {
   try {
@@ -1027,30 +1252,40 @@ export async function getEffectParameters(trackItem) {
     }
 
     const parameters = [];
-    const compCount = componentChain.getComponentCount();
+    const compCount = await componentChain.getComponentCount();
     
     for (let ci = 0; ci < compCount; ci++) {
       const comp = await componentChain.getComponentAtIndex(ci);
-      const matchName = await comp.getMatchName();
-      const displayName = await comp.getDisplayName();
+      const compMatchName = await comp.getMatchName();
+      const compDisplayName = await comp.getDisplayName();
       
       // Skip built-in components (Opacity, Motion) unless user explicitly wants them
-      const isBuiltIn = matchName.includes("ADBE Opacity") || matchName.includes("ADBE Motion");
+      const isBuiltIn = compMatchName.includes("ADBE Opacity") || compMatchName.includes("ADBE Motion");
       
-      const paramCount = comp.getParamCount();
+      const paramCount = await comp.getParamCount();
       for (let pi = 0; pi < paramCount; pi++) {
         const param = await comp.getParam(pi);
-        const paramName = (param && param.displayName ? param.displayName : "").trim();
         
-        // Skip empty params
-        if (!paramName) continue;
+        // Get both matchName (language-independent) and displayName
+        let paramMatchName = "";
+        try {
+          paramMatchName = await param.getMatchName();
+        } catch (e) {
+          // Some params may not have matchName, continue
+        }
+        
+        const paramDisplayName = (param && param.displayName ? param.displayName : "").trim();
+        
+        // Skip params without any identifier
+        if (!paramMatchName && !paramDisplayName) continue;
         
         parameters.push({
           componentIndex: ci,
           paramIndex: pi,
-          componentMatchName: matchName,
-          componentDisplayName: displayName,
-          paramDisplayName: paramName,
+          componentMatchName: compMatchName,
+          componentDisplayName: compDisplayName,
+          paramMatchName: paramMatchName,        // Language-independent (preferred)
+          paramDisplayName: paramDisplayName,    // Localized (fallback)
           param: param,
           isBuiltIn: isBuiltIn
         });
@@ -1069,9 +1304,9 @@ export async function getEffectParameters(trackItem) {
  * Modify a specific effect parameter on a clip
  * @param {TrackItem} trackItem - The clip to modify
  * @param {Object} options - Modification options
- * @param {string} options.parameterName - Name of the parameter to modify (case-insensitive, fuzzy matched)
+ * @param {string} options.parameterName - matchName or readable name of the parameter (matchName preferred)
  * @param {number} options.value - New value for the parameter
- * @param {string} options.componentName - (Optional) Name of the component/effect containing the parameter
+ * @param {string} options.componentName - (Optional) matchName or name of the component/effect
  * @param {boolean} options.excludeBuiltIn - Whether to exclude built-in effects like Motion/Opacity (default: true)
  * @returns {Promise<boolean>}
  */
@@ -1101,7 +1336,7 @@ export async function modifyEffectParameter(trackItem, options = {}) {
 
     log(`Looking for parameter "${parameterName}" to set to ${value}${animated ? ' (animated)' : ''}`, "blue");
 
-    // Get all parameters
+    // Get all parameters (now includes matchNames)
     const allParams = await getEffectParameters(trackItem);
     
     if (allParams.length === 0) {
@@ -1118,31 +1353,84 @@ export async function modifyEffectParameter(trackItem, options = {}) {
       log(`Filtered to ${candidates.length} non-built-in parameters`, "blue");
     }
     
-    // Filter by component name if specified
+    // Filter by component name if specified (check matchName first, then displayName)
     if (componentName) {
       const componentLower = componentName.toLowerCase();
       candidates = candidates.filter(p => 
-        p.componentDisplayName.toLowerCase().includes(componentLower) ||
-        p.componentMatchName.toLowerCase().includes(componentLower)
+        p.componentMatchName.toLowerCase().includes(componentLower) ||
+        p.componentDisplayName.toLowerCase().includes(componentLower)
       );
       log(`Filtered to ${candidates.length} parameters in component "${componentName}"`, "blue");
     }
     
-    // Find matching parameter (fuzzy match)
+    // Check if parameterName looks like a matchName (contains ADBE or common patterns)
+    const isMatchNameInput = parameterName.includes('ADBE') || parameterName.includes('-000');
+    
+    // Resolve readable name to matchName if we have a mapping
     const paramLower = parameterName.toLowerCase();
-    const match = candidates.find(p => 
-      p.paramDisplayName.toLowerCase() === paramLower ||
-      p.paramDisplayName.toLowerCase().includes(paramLower) ||
-      paramLower.includes(p.paramDisplayName.toLowerCase())
-    );
+    const resolvedMatchName = PARAM_NAME_TO_MATCHNAME[paramLower];
+    
+    let match = null;
+    
+    // Strategy 1: Direct matchName match (if input looks like a matchName)
+    if (isMatchNameInput) {
+      match = candidates.find(p => 
+        p.paramMatchName === parameterName ||
+        p.paramMatchName.toLowerCase().includes(paramLower)
+      );
+      if (match) {
+        log(`Direct matchName match found: ${match.paramMatchName}`, "green");
+      }
+    }
+    
+    // Strategy 2: Use our mapping to find by resolved matchName
+    if (!match && resolvedMatchName) {
+      const patterns = Array.isArray(resolvedMatchName) ? resolvedMatchName : [resolvedMatchName];
+      for (const pattern of patterns) {
+        match = candidates.find(p => 
+          p.paramMatchName === pattern ||
+          p.paramMatchName.toLowerCase().includes(pattern.toLowerCase())
+        );
+        if (match) {
+          log(`Matched via mapping: "${parameterName}" → ${match.paramMatchName}`, "green");
+          break;
+        }
+      }
+    }
+    
+    // Strategy 3: Fuzzy matchName search
+    if (!match) {
+      match = candidates.find(p => 
+        p.paramMatchName && (
+          p.paramMatchName.toLowerCase() === paramLower ||
+          p.paramMatchName.toLowerCase().includes(paramLower) ||
+          paramLower.includes(p.paramMatchName.toLowerCase())
+        )
+      );
+      if (match) {
+        log(`Fuzzy matchName match: ${match.paramMatchName}`, "green");
+      }
+    }
+    
+    // Strategy 4: Fall back to displayName matching (less reliable for non-English)
+    if (!match) {
+      log(`No matchName match, falling back to displayName search`, "yellow");
+      match = candidates.find(p => 
+        p.paramDisplayName.toLowerCase() === paramLower ||
+        p.paramDisplayName.toLowerCase().includes(paramLower) ||
+        paramLower.includes(p.paramDisplayName.toLowerCase())
+      );
+    }
 
     if (!match) {
       log(`❌ Parameter "${parameterName}" not found`, "red");
-      log(`Available parameters: ${candidates.map(p => p.paramDisplayName).join(', ')}`, "yellow");
+      // Show both matchNames and displayNames for debugging
+      log(`Available matchNames: ${candidates.map(p => p.paramMatchName).filter(Boolean).join(', ')}`, "yellow");
+      log(`Available displayNames: ${candidates.map(p => p.paramDisplayName).join(', ')}`, "yellow");
       return false;
     }
 
-    log(`✓ Found parameter: "${match.paramDisplayName}" in ${match.componentDisplayName}`, "green");
+    log(`✓ Found parameter: matchName="${match.paramMatchName}" display="${match.paramDisplayName}" in ${match.componentMatchName}`, "green");
 
     // Get project for executing action
     const project = await ppro.Project.getActiveProject();
