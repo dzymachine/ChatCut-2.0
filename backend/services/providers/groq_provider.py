@@ -109,7 +109,7 @@ class GroqProvider(AIProvider):
             ).to_dict()
         
         # Check cache
-        cached = self.cache.get_similar(user_prompt, context_params)  # ← Changed from .get()
+        cached = self.cache.get(user_prompt, context_params)
         if cached:
             print("[Groq] Cache hit")
             return cached

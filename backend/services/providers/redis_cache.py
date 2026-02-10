@@ -1,14 +1,12 @@
 """
-Redis-based TTL caching for Gemini API responses
+Redis-based TTL caching for AI provider responses
 Auto-configures with sensible defaults - no .env needed
 """
 import os
 import json
+import re
 import hashlib
-import numpy as np
 from typing import Dict, Any, Optional
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 try:
     import redis
@@ -42,41 +40,56 @@ class RedisCache:
             "errors": 0,
             "evictions": 0
         }
-
-        self.similarity_threshold = 0.85  # Tunable cutoff
-        self._local_cache = []  # In-memory cache for similarity matching
-        self._max_local_cache_size = 100  # Keep 100 most recent prompts
         
         self._connect()
     
     def _connect(self) -> bool:
         """Attempt to connect to Redis - fails gracefully"""
         if not REDIS_AVAILABLE:
-            print("[Redis] ℹ️  redis-py not installed (optional). Install with: pip install redis")
+            print("[Redis] redis-py not installed (optional). Install with: pip install redis")
             return False
         
         try:
             self.client = redis.from_url(self.redis_url, decode_responses=True, socket_connect_timeout=2)
             self.client.ping()
             self.is_available = True
-            print(f"[Redis] ✅ Connected to {self.redis_url}")
+            print(f"[Redis] Connected to {self.redis_url}")
             return True
             
         except redis.ConnectionError:
-            print(f"[Redis] ℹ️  Cannot connect to {self.redis_url}")
+            print(f"[Redis] Cannot connect to {self.redis_url}")
             print("[Redis]    (Redis optional - caching disabled. Start with: docker run -d -p 6379:6379 redis:latest)")
             self.is_available = False
             return False
         except Exception as e:
-            print(f"[Redis] ℹ️  Cache unavailable: {type(e).__name__}")
+            print(f"[Redis] Cache unavailable: {type(e).__name__}")
             self.is_available = False
             return False
     
+    @staticmethod
+    def _normalize_prompt(prompt: str) -> str:
+        """
+        Normalize prompt for cache key generation.
+        Catches trivial variations without heavy dependencies.
+        
+        Examples:
+            "  Trim  Clip to  5 seconds " -> "trim clip to 5 seconds"
+            "TRIM clip TO 5 SECONDS"      -> "trim clip to 5 seconds"
+            "trim clip to 5 seconds!!!"    -> "trim clip to 5 seconds"
+        """
+        text = prompt.lower().strip()
+        # Collapse multiple spaces/tabs into single space
+        text = re.sub(r'\s+', ' ', text)
+        # Strip trailing punctuation (e.g., "do this!!!" -> "do this")
+        text = re.sub(r'[.!?,;:]+$', '', text).strip()
+        return text
+    
     def _get_cache_key(self, prompt: str, context_params: Optional[Dict] = None) -> str:
-        """Generate cache key from prompt + context"""
-        cache_input = f"{prompt}:{json.dumps(context_params or {}, sort_keys=True)}"
+        """Generate cache key from normalized prompt + context"""
+        normalized = self._normalize_prompt(prompt)
+        cache_input = f"{normalized}:{json.dumps(context_params or {}, sort_keys=True)}"
         hash_value = hashlib.md5(cache_input.encode()).hexdigest()
-        return f"chatcut:gemini:{hash_value}"
+        return f"chatcut:ai:{hash_value}"
     
     def get(self, prompt: str, context_params: Optional[Dict] = None) -> Optional[Dict]:
         """Retrieve cached response (returns None if not found or Redis unavailable)"""
@@ -90,7 +103,7 @@ class RedisCache:
             if cached_value:
                 self.stats["hits"] += 1
                 result = json.loads(cached_value)
-                print(f"[Cache] HIT ✓ ({self.stats['hits']} total)")
+                print(f"[Cache] HIT ({self.stats['hits']} total)")
                 return result
             else:
                 self.stats["misses"] += 1
@@ -100,80 +113,12 @@ class RedisCache:
             self.stats["errors"] += 1
             # Silently fail - cache is optional
             return None
-        
-    def get_similar(self, prompt: str, context_params: Optional[Dict] = None) -> Optional[Dict]:
-        """
-        Find cached response for similar prompt using cosine similarity.
-        Falls back to exact match if no similarity match found.
-        """
-        # Try exact match first (fastest)
-        exact_hit = self.get(prompt, context_params)
-        if exact_hit:
-            print(f"[Cache] EXACT HIT")
-            return exact_hit
-        
-        # Try semantic similarity
-        if not self._local_cache or len(self._local_cache) < 2:
-            print(f"[Cache] Not enough entries for similarity check (need at least 2)")
-            return None
-        
-        try:
-            # Extract prompts from local cache
-            cached_prompts = [item["prompt"] for item in self._local_cache]
-            all_prompts = cached_prompts + [prompt]
-            
-            # Compute TF-IDF vectors (uses word/character n-grams)
-            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 3), lowercase=True)
-            tfidf_matrix = vectorizer.fit_transform(all_prompts)
-            
-            # Compare new prompt with all cached prompts
-            similarities = cosine_similarity(tfidf_matrix[-1], tfidf_matrix[:-1])[0]
-            print(f"[Cache] Similarities: {similarities}")
-            
-            # Find best match
-            best_idx = np.argmax(similarities)
-            best_similarity = similarities[best_idx]
-            
-            print(f"[Cache] Similarity check: {best_similarity:.2f} (threshold: {self.similarity_threshold})")
-            
-            if best_similarity >= self.similarity_threshold:
-                best_prompt = cached_prompts[best_idx]
-                print(f"[Cache] SEMANTIC HIT! '{prompt}' matches '{best_prompt}' ({best_similarity:.2f})")
-                
-                # Return cached response for the similar prompt
-                return self._local_cache[best_idx]["response"]
-            
-            return None
-            
-        except Exception as e:
-            print(f"[Cache] Similarity check error: {e}")
-            return None
     
     def set(self, prompt: str, response: Dict, context_params: Optional[Dict] = None) -> bool:
-        """Store response in Redis AND in local memory for similarity matching"""
-        
-        # Store in Redis
-        redis_stored = self._redis_set(prompt, response, context_params)
-        
-        # Also store in local cache for similarity matching
-        try:
-            if len(self._local_cache) >= self._max_local_cache_size:
-                self._local_cache.pop(0)  # Remove oldest
-            
-            self._local_cache.append({
-                "prompt": prompt,
-                "response": response,
-                "context": context_params
-            })
-        except Exception as e:
-            print(f"[Cache] Local cache write error: {e}")
-        
-        return redis_stored
-    
-    def _redis_set(self, prompt: str, response: Dict, context_params: Optional[Dict] = None) -> bool:
-        """Actual Redis write (extracted to separate method)"""
+        """Store response in Redis with TTL"""
         if not self.is_available or not self.client:
             return False
+        
         try:
             cache_key = self._get_cache_key(prompt, context_params)
             serialized = json.dumps(response)
@@ -197,12 +142,12 @@ class RedisCache:
             return False
     
     def clear_all(self) -> bool:
-        """Clear ALL ChatCut cache"""
+        """Clear ALL ChatCut cache entries"""
         if not self.is_available or not self.client:
             return False
         
         try:
-            pattern = "chatcut:gemini:*"
+            pattern = "chatcut:ai:*"
             keys = self.client.keys(pattern)
             
             if keys:
