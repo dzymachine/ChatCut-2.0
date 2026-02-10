@@ -102,13 +102,65 @@ class RedisCache:
             # Silently fail - cache is optional
             return None
         
+    def preprocess_prompt(self, prompt: str):
+        """
+        Normalize a user prompt for caching/similarity.
+        Returns: (normalized: str, has_negation: bool)
+        """
+
+        if not prompt:
+            return "", False, [], []
+
+        s = str(prompt)
+
+        # 1) Normalize whitespace and case
+        s = s.strip().lower()
+
+        # 2) Expand common percent phrases: "170 percent" -> "170%"
+        s = re.sub(r'(\d+(?:\.\d+)?)\s*percent(s)?', r'\1%', s)
+
+        # 3) Remove polite/filler phrases (word boundaries)
+        s = re.sub(r'\b(please|pls|thank you|thanks|could you|would you|hey|hi|hello)\b', ' ', s)
+
+        # 4) Normalize common contractions (simple set)
+        s = re.sub(r"\b(can't|cannot)\b", "cannot", s)
+        s = re.sub(r"\b(don't|do not)\b", "do not", s)
+        s = re.sub(r"\b(doesn't|does not)\b", "does not", s)
+        s = re.sub(r"\b(i'm|i am)\b", "i am", s)
+
+        # 5) Replace punctuation except % and digits/letters/spaces (keep '%' for numeric meaning)
+        s = re.sub(r'[^0-9a-zA-Z%\s]', ' ', s)
+
+        # 6) Collapse repeated whitespace
+        s = re.sub(r'\s+', ' ', s).strip()
+
+        # 7) Optional lightweight synonym normalization (domain-specific)
+        #    Map obvious synonyms to canonical tokens to improve matching: e.g. "scale" -> "zoom"
+        syn_map = {
+            'scale': 'zoom',
+            'zooming': 'zoom',
+            'zoomed': 'zoom',
+            'increase volume': 'volume up',
+            'decrease volume': 'volume down',
+            'brightness': 'exposure'
+        }
+        # apply simple token-level replace (word boundaries)
+        for k, v in syn_map.items():
+            s = re.sub(r'\b' + re.escape(k) + r'\b', v, s)
+        print(f"[Cache] Preprocessed prompt: '{prompt}' -> '{s}'")
+        return s
+    
     def get_similar(self, prompt: str, context_params: Optional[Dict] = None) -> Optional[Dict]:
         """
         Find cached response for similar prompt using cosine similarity.
         Falls back to exact match if no similarity match found.
         """
+
+        # Preprocess prompt for better matching
+        normalized_prompt = self.preprocess_prompt(prompt)
+
         # Try exact match first (fastest)
-        exact_hit = self.get(prompt, context_params)
+        exact_hit = self.get(normalized_prompt, context_params)
         if exact_hit:
             print(f"[Cache] EXACT HIT")
             return exact_hit
@@ -121,7 +173,7 @@ class RedisCache:
         try:
             # Extract prompts from local cache
             cached_prompts = [item["prompt"] for item in self._local_cache]
-            all_prompts = cached_prompts + [prompt]
+            all_prompts = cached_prompts + [normalized_prompt]
             
             # Compute TF-IDF vectors (uses word/character n-grams)
             vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 3), lowercase=True)
@@ -152,9 +204,11 @@ class RedisCache:
     
     def set(self, prompt: str, response: Dict, context_params: Optional[Dict] = None) -> bool:
         """Store response in Redis AND in local memory for similarity matching"""
-        
+        # Preprocess prompt for better matching
+        normalized_prompt = self.preprocess_prompt(prompt)
+
         # Store in Redis
-        redis_stored = self._redis_set(prompt, response, context_params)
+        redis_stored = self._redis_set(normalized_prompt, response, context_params)
         
         # Also store in local cache for similarity matching
         try:
@@ -162,7 +216,7 @@ class RedisCache:
                 self._local_cache.pop(0)  # Remove oldest
             
             self._local_cache.append({
-                "prompt": prompt,
+                "prompt": normalized_prompt,
                 "response": response,
                 "context": context_params
             })
@@ -184,7 +238,6 @@ class RedisCache:
         except Exception as e:
             self.stats["errors"] += 1
             return False
-    
     def delete(self, prompt: str, context_params: Optional[Dict] = None) -> bool:
         """Manually delete a cached entry"""
         if not self.is_available or not self.client:
