@@ -1,0 +1,32 @@
+services:
+  # Redis cache - stores AI response cache to save API credits
+  # Data persists across restarts via a named volume
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Backend API server (optional - you can also run it locally with python main.py)
+  backend:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    env_file:
+      - ./backend/.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./backend/output:/app/output
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:

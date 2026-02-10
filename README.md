@@ -16,13 +16,13 @@ ChatCut is a UXP plugin for Premiere Pro that lets you:
 │   Premiere Pro          │     │   Python Backend        │
 │   (UXP Plugin)          │────▶│   (FastAPI)             │
 │   React Frontend        │     │   Port 3001             │
-└─────────────────────────┘     └───────────┬─────────────┘
-                                            │
-                                            ▼ (optional)
-                                ┌─────────────────────────┐
-                                │   Google Colab          │
-                                │   (GPU Processing)      │
-                                └─────────────────────────┘
+└─────────────────────────┘     └───────┬─────────┬───────┘
+                                        │         │
+                                        ▼         ▼ (optional)
+                          ┌──────────────┐  ┌─────────────────┐
+                          │   Redis      │  │   Google Colab  │
+                          │   (Cache)    │  │   (GPU)         │
+                          └──────────────┘  └─────────────────┘
 ```
 
 ---
@@ -32,10 +32,12 @@ ChatCut is a UXP plugin for Premiere Pro that lets you:
 ### Prerequisites
 
 - **Adobe Premiere Pro** 2025 (v25.5+)
-- **Python** 3.9+
 - **Node.js** 16+
 - **Adobe UXP Developer Tools** ([Download](https://developer.adobe.com/photoshop/uxp/devtool/))
-- **Gemini API Key** ([Get one free](https://aistudio.google.com/apikey))
+- **AI API Key** — one of the following:
+  - **Gemini API Key** ([Get one free](https://aistudio.google.com/apikey))
+  - **Groq API Key** ([Get one free](https://console.groq.com/keys)) — faster, generous free tier
+- **Docker Desktop** ([Download](https://www.docker.com/products/docker-desktop/)) — for running the backend + Redis cache
 
 ---
 
@@ -50,7 +52,67 @@ cd ChatCut-2.0
 
 ## Step 2: Backend Setup
 
-### 2.1 Create a virtual environment (recommended)
+You have two options: **Docker (recommended)** or **manual setup**.
+
+### Option A: Docker Setup (Recommended)
+
+Docker starts both the backend server and Redis cache with a single command.
+
+#### 2.1 Configure environment variables
+
+```bash
+cd backend
+cp .env.example .env
+# Edit .env and add your API key (Gemini or Groq)
+```
+
+Your `.env` file should contain at minimum:
+```env
+# Use Gemini (default)
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Or use Groq (set AI_PROVIDER=groq)
+# AI_PROVIDER=groq
+# GROQ_API_KEY=your_groq_api_key_here
+```
+
+#### 2.2 Start with Docker Compose
+
+From the project root:
+
+```bash
+docker compose up
+```
+
+This starts:
+- **Backend** on `http://localhost:3001`
+- **Redis** cache on port `6379` (automatic, no configuration needed)
+
+The backend waits for Redis to be healthy before starting. Cache data persists across restarts.
+
+> **Tip**: Run `docker compose up -d` to start in the background, and `docker compose logs -f` to view logs.
+
+#### Redis-only mode (for development)
+
+If you prefer to run the backend locally (for hot-reload) but still want Redis caching:
+
+```bash
+# Start only Redis
+docker compose up redis
+
+# In another terminal, run the backend locally
+cd backend
+source venv/bin/activate
+python main.py
+```
+
+The backend auto-detects Redis on `localhost:6379`. If Redis isn't running, caching is simply disabled — everything still works.
+
+---
+
+### Option B: Manual Setup (without Docker)
+
+#### 2.1 Create a virtual environment
 
 ```bash
 cd backend
@@ -63,19 +125,17 @@ source venv/bin/activate
 venv\Scripts\activate
 ```
 
-### 2.2 Install dependencies
+#### 2.2 Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2.3 Configure environment variables
+#### 2.3 Configure environment variables
 
 ```bash
-# Copy the example env file
 cp .env.example .env
-
-# Edit .env and add your Gemini API key
+# Edit .env and add your API key
 ```
 
 Your `.env` file should contain:
@@ -83,7 +143,7 @@ Your `.env` file should contain:
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
-### 2.4 Start the backend server
+#### 2.4 Start the backend server
 
 ```bash
 python main.py
@@ -95,6 +155,8 @@ Starting ChatCut Backend on http://127.0.0.1:3001
 ```
 
 Keep this terminal running.
+
+> **Note**: Without Redis, response caching is disabled. The app works fine, but repeated prompts will make new API calls each time.
 
 ---
 
@@ -189,10 +251,12 @@ For advanced AI-powered effects like object tracking:
 ChatCut/
 ├── backend/                 # Python FastAPI server
 │   ├── main.py             # API endpoints
+│   ├── Dockerfile          # Container build for backend
 │   ├── requirements.txt    # Python dependencies
 │   ├── services/           # AI providers & business logic
 │   │   ├── ai_service.py   # Main AI processing
 │   │   ├── providers/      # AI provider implementations
+│   │   │   └── redis_cache.py  # Redis caching layer
 │   │   └── question_service.py
 │   └── tests/              # Backend tests
 │
@@ -206,9 +270,9 @@ ChatCut/
 │   │   └── manifest.json   # Plugin manifest
 │   └── dist/               # Built plugin (generated)
 │
-├── notebooks/              # Colab notebooks for GPU processing
-├── COLAB_GUIDE.md          # Guide for Colab setup
-└── README.md               # This file
+├── docker-compose.yml       # Docker orchestration (backend + Redis)
+├── COLAB_GUIDE.md           # Guide for Colab setup
+└── README.md                # This file
 ```
 
 ---
@@ -276,9 +340,12 @@ Then in UXP Developer Tools, click **Reload** after each change.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GEMINI_API_KEY` | Google Gemini API key | (required) |
-| `GEMINI_MODEL` | Model to use | `gemini-2.0-flash` |
-| `AI_PROVIDER` | AI provider | `gemini` |
+| `AI_PROVIDER` | AI provider (`gemini` or `groq`) | `gemini` |
+| `GEMINI_API_KEY` | Google Gemini API key | (required if using Gemini) |
+| `GEMINI_MODEL` | Gemini model to use | `gemini-2.0-flash` |
+| `GROQ_API_KEY` | Groq API key | (required if using Groq) |
+| `GROQ_MODEL` | Groq model to use | `llama-3.3-70b-versatile` |
+| `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
 
 ### Backend Port
 
