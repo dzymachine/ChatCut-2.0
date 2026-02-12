@@ -998,406 +998,204 @@ export async function applyAudioFilter(audioClip, filterName) {
  */
 export async function adjustVolume(audioClip, volumeDb = 0) {
   try {
-    log(`[VOLUME] ========== STARTING VOLUME ADJUSTMENT ==========`, "blue");
-    log(`[VOLUME] Input volumeDb parameter: ${volumeDb} (type: ${typeof volumeDb})`, "blue");
-    const volumeDbNum = Number(volumeDb) || 0;
-    log(`[VOLUME] Parsed volumeDb: ${volumeDbNum}dB`, "blue");
-    log(`[VOLUME] Adjusting volume by ${volumeDbNum}dB`, "blue");
-    
+    // Allow calling style adjustVolume({ audioClip, volumeDb })
+    if (audioClip && typeof audioClip === 'object' && !(typeof audioClip.getComponentChain === 'function')) {
+      const opts = audioClip;
+      audioClip = opts.audioClip || null;
+      volumeDb = opts.volumeDb !== undefined ? opts.volumeDb : volumeDb;
+    }
+    // Support string commands like "mute the clip"
+    const isStringCmd = typeof volumeDb === 'string';
+    const cmd = isStringCmd ? volumeDb.toLowerCase().trim() : null;
+    const isMuteCmd = cmd && cmd.includes('mute');
+    const volumeDbNum = isStringCmd ? 0 : Number(volumeDb) || 0;
     const project = await ppro.Project.getActiveProject();
+
     if (!project) {
       log("No active project", "red");
       return false;
     }
-
+    // If no audioClip provided, try to auto-detect first selected clip
     if (!audioClip) {
-      log("No audio clip provided", "red");
-      return false;
+      try {
+        const sequence = await project.getActiveSequence();
+        if (sequence) {
+          const selection = await sequence.getSelection();
+          if (selection) {
+            const trackItems = await selection.getTrackItems();
+            if (trackItems && trackItems.length > 0) {
+              audioClip = trackItems[0];
+              log("No audioClip provided — using first selected clip", "blue");
+            }
+          }
+        }
+      } catch (e) {
+        // fallthrough
+      }
+      if (!audioClip) {
+        log("No audio clip provided and none selected", "red");
+        return false;
+      }
     }
 
-    // Get audio component chain
     const audioComponentChain = await audioClip.getComponentChain();
     if (!audioComponentChain) {
       log("No audio component chain", "red");
       return false;
     }
 
-    // Find Gain/Volume parameter by matchName (language-independent)
-    // Common audio gain matchName patterns
-    const gainMatchPatterns = [
-      "Gain", "ADBE Gain", "gain", "Level", "level", "Volume", "volume",
-      "Channel Volume", "ADBE Channel Volume"
-    ];
+    // Find or create gain parameter
+    const gainPatterns = ["Gain", "ADBE Gain", "gain", "Level", "level", "Volume", "volume", "Channel Volume", "ADBE Channel Volume"];
+    let gainParam = null;
     
-    // Helper to find a Gain/Volume parameter across all components by matchName
-    const findGainParamByMatchName = async () => {
-      const compCount = await audioComponentChain.getComponentCount();
-      for (let ci = 0; ci < compCount; ci++) {
-        try {
-          const comp = await audioComponentChain.getComponentAtIndex(ci);
-          const paramCount = await comp.getParamCount();
-          for (let pi = 0; pi < paramCount; pi++) {
+    // Search for existing gain parameter
+    for (let ci = 0; ci < await audioComponentChain.getComponentCount(); ci++) {
+      try {
+        const comp = await audioComponentChain.getComponentAtIndex(ci);
+        for (let pi = 0; pi < await comp.getParamCount(); pi++) {
+          try {
+            const param = await comp.getParam(pi);
+            const matchName = await param.getMatchName();
+            if (gainPatterns.some(p => matchName === p || matchName.toLowerCase().includes(p.toLowerCase()))) {
+              gainParam = param;
+              break;
+            }
+          } catch (e) {}
+        }
+        if (gainParam) break;
+      } catch (e) {}
+    }
+
+    // If not found, try to add gain filter
+    if (!gainParam) {
+      try {
+        const filterPatterns = ["ADBE Channel Volume", "Channel Volume", "ADBE Gain", "Gain"];
+        let displayNames = await ppro.AudioFilterFactory.getDisplayNames();
+        
+        let gainFilterName = filterPatterns.find(p => 
+          displayNames.find(d => d.toLowerCase() === p.toLowerCase())
+        );
+        
+        if (gainFilterName) {
+          let gainFilter = await ppro.AudioFilterFactory.createComponentByDisplayName(gainFilterName, audioClip);
+          const appendAction = await audioComponentChain.createAppendComponentAction(gainFilter);
+          await executeAction(project, appendAction);
+          
+          // Search again
+          for (let ci = 0; ci < await audioComponentChain.getComponentCount(); ci++) {
             try {
-              const param = await comp.getParam(pi);
-              const matchName = await param.getMatchName();
-              
-              // Check if matchName matches any known gain/volume pattern
-              for (const pattern of gainMatchPatterns) {
-                if (matchName === pattern || 
-                    matchName.toLowerCase().includes(pattern.toLowerCase())) {
-                  log(`Found gain param by matchName: ${matchName}`, "green");
-                  return param;
+              const comp = await audioComponentChain.getComponentAtIndex(ci);
+              for (let pi = 0; pi < await comp.getParamCount(); pi++) {
+                const param = await comp.getParam(pi);
+                const matchName = await param.getMatchName();
+                if (gainPatterns.some(p => matchName === p || matchName.toLowerCase().includes(p.toLowerCase()))) {
+                  gainParam = param;
+                  break;
                 }
               }
-            } catch (err) {
-              // Continue searching
-            }
+              if (gainParam) break;
+            } catch (e) {}
           }
-        } catch (err) {
-          // Continue searching
         }
+      } catch (err) {
+        log(`Could not add gain filter: ${err.message}`, "yellow");
+      }
+    }
+
+    if (!gainParam) {
+      log("Could not find or create gain parameter", "red");
+      return false;
+    }
+
+    // Extract numeric value from object (handles nested structures)
+    const extractValue = (obj) => {
+      if (typeof obj === 'number' && !isNaN(obj)) return obj;
+      if (!obj || typeof obj !== 'object') return null;
+      if ('value' in obj) {
+        const val = obj.value;
+        if (typeof val === 'number') return val;
+        if (val && typeof val === 'object' && 'value' in val) return val.value;
+      }
+      for (const key in obj) {
+        if (typeof obj[key] === 'number' && !isNaN(obj[key])) return obj[key];
       }
       return null;
     };
 
-    // Try to find existing Gain/Volume parameter by matchName
-    let gainParam = await findGainParamByMatchName();
-
-    // If not found, try to add a "Gain" or "Volume" audio filter
-    if (!gainParam) {
-      try {
-        // Get available audio filter matchNames and displayNames
-        // Note: Audio filters may only expose displayNames in the API
-        // We'll try matchNames first, then fall back to displayNames
-        let matchNames = [];
-        let displayNames = [];
-        
-        try {
-          matchNames = await ppro.AudioFilterFactory.getMatchNames();
-          log(`Available audio filter matchNames: ${matchNames.join(', ')}`, "blue");
-        } catch (e) {
-          log(`getMatchNames not available for audio filters, using displayNames`, "yellow");
-        }
-        
-        displayNames = await ppro.AudioFilterFactory.getDisplayNames();
-        log(`Available audio filter displayNames: ${displayNames.join(', ')}`, "blue");
-        
-        // Try to find a gain/volume filter by matchName first
-        const gainFilterMatchPatterns = [
-          "ADBE Channel Volume", "Channel Volume", "ADBE Gain", "Gain",
-          "ADBE Hard Limiter", "Hard Limiter", "ADBE Dynamics", "Dynamics"
-        ];
-        
-        let gainFilterName = null;
-        let useMatchName = false;
-        
-        // Try matchNames first
-        if (matchNames.length > 0) {
-          for (const pattern of gainFilterMatchPatterns) {
-            const matching = matchNames.find(mn => 
-              mn === pattern || mn.toLowerCase().includes(pattern.toLowerCase())
-            );
-            if (matching) {
-              gainFilterName = matching;
-              useMatchName = true;
-              break;
-            }
-          }
-        }
-        
-        // Fall back to displayNames if no matchName found
-        // Note: This is less reliable for non-English locales, but some audio APIs
-        // only expose displayNames
-        if (!gainFilterName) {
-          const gainFilterDisplayNames = ["Channel Volume", "Gain", "Hard Limiter", "Dynamics", "Volume"];
-          for (const name of gainFilterDisplayNames) {
-            const matching = displayNames.find(dn => dn.toLowerCase() === name.toLowerCase());
-            if (matching) {
-              gainFilterName = matching;
-              break;
-            }
-          }
-        }
-        
-        if (!gainFilterName) {
-          log(`Could not find Gain/Volume filter.`, "yellow");
-          log("💡 Tip: Audio clips may have built-in volume. Try selecting clips that already have volume/gain effects applied.", "yellow");
-          return false;
-        }
-
-        // Create and add the gain filter
-        log(`Adding audio filter: ${gainFilterName} (useMatchName: ${useMatchName})`, "blue");
-        try {
-          let gainFilter;
-          if (useMatchName) {
-            // Use matchName if available (more reliable)
-            gainFilter = await ppro.AudioFilterFactory.createComponent(gainFilterName);
-          } else {
-            // Fall back to displayName
-            gainFilter = await ppro.AudioFilterFactory.createComponentByDisplayName(
-              gainFilterName,
-              audioClip
-            );
-          }
-          const appendAction = await audioComponentChain.createAppendComponentAction(gainFilter);
-          await executeAction(project, appendAction);
-        } catch (err) {
-          log(`Could not add ${gainFilterName} filter: ${err.message || err}`, "yellow");
-          log("💡 Tip: Some audio filters may not be compatible. Try applying 'Channel Volume' manually first.", "yellow");
-          return false;
-        }
-        
-        // Search again for the gain parameter by matchName
-        gainParam = await findGainParamByMatchName();
-      } catch (err) {
-        log(`Could not add Gain/Volume filter: ${err}`, "yellow");
-        console.error("Error adding gain filter:", err);
-      }
-    }
-
-    if (!gainParam) {
-      log("Could not find or create gain/volume parameter", "red");
-      log("💡 Tip: This clip may not have a volume parameter. Try applying 'Channel Volume' or 'Gain' audio filter manually first, or select a different audio clip.", "yellow");
-      return false;
-    }
-
-    // Helper function to extract numeric value from objects (efficient extraction)
-    // Used for extracting volume values from getValueAtTime() or Keyframe.value objects
-    function extractNumericValue(obj, source) {
-      if (obj === null || obj === undefined) return null;
-      
-      // Direct number check
-      if (typeof obj === 'number' && !isNaN(obj)) {
-        return obj;
-      }
-      
-      // Check .value property (most common)
-      if ('value' in obj) {
-        const val = obj.value;
-        if (typeof val === 'number' && !isNaN(val)) {
-          log(`[VOLUME] Found number in ${source}.value = ${val}dB`, "blue");
-          return val;
-        }
-        // Check nested .value.value
-        if (typeof val === 'object' && val !== null && 'value' in val) {
-          const nestedVal = val.value;
-          if (typeof nestedVal === 'number' && !isNaN(nestedVal)) {
-            log(`[VOLUME] Found number in ${source}.value.value = ${nestedVal}dB`, "blue");
-            return nestedVal;
-          }
-        }
-      }
-      
-      // Check all properties for a number (fallback)
-      for (const key in obj) {
-        const prop = obj[key];
-        if (typeof prop === 'number' && !isNaN(prop)) {
-          log(`[VOLUME] Found number in ${source}.${key} = ${prop}dB`, "blue");
-          return prop;
-        }
-      }
-      
-      return null;
-    }
-    
-    // Get current volume value - following Premiere Pro UXP API documentation
-    // API Reference: ComponentParam.getValueAtTime(time) → Promise<number | string | boolean | PointF | Color>
-    //                For numeric parameters (like volume/gain), should return number directly
-    // API Reference: ComponentParam.getStartValue() → Promise<Keyframe>
-    //                Keyframe.value is an object that contains the actual value
-    let currentValue = 0;
-    
+    // Get current volume
+    let currentValue = 1.0;
     try {
       const clipInPoint = await audioClip.getInPoint();
-      log(`[VOLUME] Step 1: Clip in point = ${clipInPoint.seconds}s`, "blue");
-      
-      // Method 1: Try getValueAtTime() - preferred method per API docs
-      let valueExtracted = false;
+      const valueAtTime = await gainParam.getValueAtTime(clipInPoint);
+      const extracted = extractValue(valueAtTime);
+      if (extracted !== null) currentValue = extracted;
+    } catch (e) {
       try {
-        log(`[VOLUME] Step 2: Calling getValueAtTime(${clipInPoint.seconds}s)...`, "blue");
-        const valueAtTime = await gainParam.getValueAtTime(clipInPoint);
-        log(`[VOLUME] Step 3: getValueAtTime() returned:`, valueAtTime, "blue");
-        log(`[VOLUME] Step 4: Return type = ${typeof valueAtTime}`, "blue");
-        
-        // Extract numeric value efficiently
-        if (typeof valueAtTime === 'number' && !isNaN(valueAtTime)) {
-          currentValue = valueAtTime;
-          valueExtracted = true;
-          log(`[VOLUME] ✅ SUCCESS: Direct number extraction = ${currentValue}dB`, "green");
-        } else if (typeof valueAtTime === 'object' && valueAtTime !== null) {
-          log(`[VOLUME] Step 5: Object detected, inspecting structure...`, "blue");
-          log(`[VOLUME] Step 6: Object keys = [${Object.keys(valueAtTime).join(', ')}]`, "blue");
-          log(`[VOLUME] Step 7: Object JSON = ${JSON.stringify(valueAtTime)}`, "blue");
-          
-          // Try common extraction paths: .value, .value.value
-          const extracted = extractNumericValue(valueAtTime, "getValueAtTime()");
-          if (extracted !== null) {
-            currentValue = extracted;
-            valueExtracted = true;
-            log(`[VOLUME] ✅ SUCCESS: Extracted from object = ${currentValue}dB`, "green");
-          }
-        }
-        
-        if (!valueExtracted) {
-          log(`[VOLUME] ⚠️ WARNING: Could not extract number from getValueAtTime(), trying fallback...`, "yellow");
-          throw new Error("getValueAtTime did not return extractable number");
-        }
-      } catch (e) {
-        log(`[VOLUME] Step 8: getValueAtTime() failed: ${e.message}`, "yellow");
-        
-        // Method 2: Fallback to getStartValue() - returns Keyframe object
-        try {
-          log(`[VOLUME] Step 9: Calling getStartValue() as fallback...`, "blue");
-          const keyframe = await gainParam.getStartValue();
-          log(`[VOLUME] Step 10: getStartValue() returned Keyframe:`, keyframe, "blue");
-          log(`[VOLUME] Step 11: Keyframe type = ${typeof keyframe}`, "blue");
-          log(`[VOLUME] Step 12: Keyframe keys = [${Object.keys(keyframe || {}).join(', ')}]`, "blue");
-          
-          if (keyframe && 'value' in keyframe) {
-            const keyframeValue = keyframe.value;
-            log(`[VOLUME] Step 13: Keyframe.value =`, keyframeValue, "blue");
-            log(`[VOLUME] Step 14: Keyframe.value type = ${typeof keyframeValue}`, "blue");
-            
-            if (typeof keyframeValue === 'number' && !isNaN(keyframeValue)) {
-              currentValue = keyframeValue;
-              valueExtracted = true;
-              log(`[VOLUME] ✅ SUCCESS: Direct Keyframe.value = ${currentValue}dB`, "green");
-            } else if (typeof keyframeValue === 'object' && keyframeValue !== null) {
-              log(`[VOLUME] Step 15: Keyframe.value is object, keys = [${Object.keys(keyframeValue).join(', ')}]`, "blue");
-              log(`[VOLUME] Step 16: Keyframe.value JSON = ${JSON.stringify(keyframeValue)}`, "blue");
-              
-              const extracted = extractNumericValue(keyframeValue, "Keyframe.value");
-              if (extracted !== null) {
-                currentValue = extracted;
-                valueExtracted = true;
-                log(`[VOLUME] ✅ SUCCESS: Extracted from Keyframe.value = ${currentValue}dB`, "green");
-              }
-            }
-          }
-          
-          if (!valueExtracted) {
-            log(`[VOLUME] ⚠️ WARNING: Could not extract number from getStartValue()`, "yellow");
-          }
-        } catch (e2) {
-          log(`[VOLUME] ❌ ERROR: getStartValue() failed: ${e2.message}`, "red");
-          console.error("[VOLUME] getStartValue() error details:", e2);
-        }
+        const keyframe = await gainParam.getStartValue();
+        const extracted = extractValue(keyframe ? keyframe.value : null);
+        if (extracted !== null) currentValue = extracted;
+      } catch (e2) {
+        log(`Could not read current volume: ${e2.message}`, "yellow");
       }
-      
-      // Final validation and logging
-      if (!valueExtracted || typeof currentValue !== 'number' || isNaN(currentValue)) {
-        log(`[VOLUME] ⚠️ WARNING: Could not extract valid volume, defaulting to 0dB`, "yellow");
-        log(`[VOLUME] ⚠️ WARNING: valueExtracted=${valueExtracted}, currentValue=${currentValue}, type=${typeof currentValue}`, "yellow");
-        currentValue = 0;
-      }
-      
-      log(`[VOLUME] ✅ FINAL: Current volume (linear) = ${currentValue}`, "blue");
-      
-    } catch (err) {
-      log(`[VOLUME] ❌ EXCEPTION: ${err.message}`, "red");
-      console.error("[VOLUME] Exception details:", err);
-      console.error("[VOLUME] Exception stack:", err.stack);
-      currentValue = 1.0; // Default to unity gain (1.0 = 0dB linear multiplier)
     }
 
-    // CRITICAL: Premiere Pro's gain/volume parameters use LINEAR MULTIPLIERS, not dB!
-    // Conversion formulas:
-    //   linear = 10^(dB/20)   (dB to linear)
-    //   dB = 20 * log10(linear)   (linear to dB)
-    // Examples:
-    //   1.0 = 0dB (unity gain)
-    //   2.0 = +6dB (double amplitude)
-    //   0.5 = -6dB (half amplitude)
-    //   0.224 ≈ -13dB
-    
-    log(`[VOLUME] Step 17: Converting between linear and dB scales...`, "blue");
-    log(`[VOLUME] Step 18: Current value (linear) = ${currentValue}`, "blue");
-    
-    // Convert current linear value to dB
-    const currentValueDb = 20 * Math.log10(Math.max(currentValue, 0.0001)); // Avoid log(0)
-    log(`[VOLUME] Step 19: Current value in dB = ${currentValueDb.toFixed(2)}dB`, "blue");
-    
-    // User wants to adjust by this many dB
-    const adjustmentDb = volumeDbNum;
-    log(`[VOLUME] Step 20: Adjustment amount = ${adjustmentDb}dB`, "blue");
-    
-    // Calculate new dB value (relative adjustment)
-    const newValueDb = currentValueDb + adjustmentDb;
-    log(`[VOLUME] Step 21: New value in dB = ${newValueDb.toFixed(2)}dB (${currentValueDb.toFixed(2)}dB + ${adjustmentDb}dB)`, "blue");
-    
-    // Convert back to linear multiplier for Premiere Pro
-    const finalValue = Math.pow(10, newValueDb / 20);
-    log(`[VOLUME] Step 22: Converting back to linear: 10^(${newValueDb.toFixed(2)}/20) = ${finalValue.toFixed(6)}`, "blue");
-    log(`[VOLUME] Step 23: Setting volume to linear value ${finalValue.toFixed(6)} (equivalent to ${newValueDb.toFixed(2)}dB)`, "blue");
-    
-    log(`[VOLUME] Step 24: Final values - Current: ${currentValue} (linear) = ${currentValueDb.toFixed(2)}dB, Adjustment: ${adjustmentDb}dB, New: ${finalValue.toFixed(6)} (linear) = ${newValueDb.toFixed(2)}dB`, "blue");
-
-    // Set value using Premiere Pro UXP API pattern
-    // API Reference: ComponentParam.createKeyframe(value) → Keyframe
-    //                ComponentParam.createSetValueAction(keyframe, isTimeVarying) → Action
-    log(`[VOLUME] Step 25: Setting volume using UXP API...`, "blue");
-    log(`[VOLUME] Step 26: About to set linear value = ${finalValue.toFixed(6)} (type: ${typeof finalValue})`, "blue");
-    
-    try {
-      log(`[VOLUME] Step 27: Creating keyframe with linear value ${finalValue.toFixed(6)}...`, "blue");
-      const keyframe = await gainParam.createKeyframe(Number(finalValue));
-      log(`[VOLUME] Step 28: Keyframe created successfully`, "blue");
-      log(`[VOLUME] Step 29: Keyframe object:`, keyframe, "blue");
-      log(`[VOLUME] Step 30: Keyframe.value:`, keyframe && keyframe.value, "blue");
-      
-      log(`[VOLUME] Step 31: Creating setValueAction (isTimeVarying=true)...`, "blue");
-      const setAction = await gainParam.createSetValueAction(keyframe, true);
-      log(`[VOLUME] Step 32: Action created successfully`, "blue");
-      
-      log(`[VOLUME] Step 33: Executing action...`, "blue");
-      await executeAction(project, setAction);
-      log(`[VOLUME] Step 34: Action executed successfully`, "blue");
-      
-      // Verify what value was actually set by reading it back
-      log(`[VOLUME] Step 35: Verifying set value by reading it back...`, "blue");
-      try {
-        const clipInPointForVerify = await audioClip.getInPoint();
-        const verifyValue = await gainParam.getValueAtTime(clipInPointForVerify);
-        log(`[VOLUME] Step 36: Read back value:`, verifyValue, "blue");
-        const extractedVerify = extractNumericValue(verifyValue, "verify");
-        if (extractedVerify !== null) {
-          const verifyDb = 20 * Math.log10(Math.max(extractedVerify, 0.0001));
-          log(`[VOLUME] Step 37: Extracted verify value: ${extractedVerify} (linear) = ${verifyDb.toFixed(2)}dB`, "blue");
-          if (Math.abs(extractedVerify - finalValue) > 0.01) {
-            log(`[VOLUME] ⚠️ WARNING: Set ${finalValue.toFixed(6)} (${newValueDb.toFixed(2)}dB) but read back ${extractedVerify} (${verifyDb.toFixed(2)}dB) - Premiere Pro may have changed it!`, "yellow");
-          }
-        }
-      } catch (verifyErr) {
-        log(`[VOLUME] ⚠️ Could not verify set value: ${verifyErr.message}`, "yellow");
+    // CRITICAL: Premiere Pro uses LINEAR multipliers, not dB!
+    // linear = 10^(dB/20), dB = 20*log10(linear)
+    // Handle special string commands first
+    let finalValue;
+    let currentValueDb = null;
+    let newValueDb = null;
+    if (isMuteCmd) {
+      finalValue = 0.0; // fully mute
+      log(`Command: mute — setting linear gain to 0`, "blue");
+    } else {
+      // If caller provided numeric 0, treat it as an absolute request to set to 0 dB
+      if (typeof volumeDb === 'number' && Number(volumeDb) === 0) {
+        finalValue = 1.0; // 0 dB
+        currentValueDb = 20 * Math.log10(Math.max(currentValue, 0.0001));
+        newValueDb = 0.0;
+      } else {
+        currentValueDb = 20 * Math.log10(Math.max(currentValue, 0.0001));
+        newValueDb = currentValueDb + volumeDbNum;
+        finalValue = Math.pow(10, newValueDb / 20);
       }
+    }
+
+    // Set value
+    try {
+      const keyframe = await gainParam.createKeyframe(Number(finalValue));
+      const setAction = await gainParam.createSetValueAction(keyframe, true);
+      await executeAction(project, setAction);
       
-      log(`[VOLUME] ✅ SUCCESS: Volume adjusted ${currentValueDb.toFixed(2)}dB → ${newValueDb.toFixed(2)}dB (${adjustmentDb > 0 ? '+' : ''}${adjustmentDb}dB)`, "green");
+      // Verify
+      try {
+        const clipInPoint = await audioClip.getInPoint();
+        const verifyValue = await gainParam.getValueAtTime(clipInPoint);
+        const verified = extractValue(verifyValue);
+        if (verified !== null && Math.abs(verified - finalValue) > 0.01) {
+          log(`⚠️ Volume set to ${finalValue.toFixed(4)} but read back ${verified.toFixed(4)}`, "yellow");
+        }
+      } catch (e) {}
+      
+      if (currentValueDb !== null && newValueDb !== null) {
+        log(`Volume adjusted ${currentValueDb.toFixed(2)}dB → ${newValueDb.toFixed(2)}dB`, "green");
+      } else {
+        log(`Volume set to linear gain ${finalValue}`, "green");
+      }
       return true;
     } catch (err) {
-      log(`[VOLUME] ⚠️ WARNING: Keyframe method failed: ${err.message}`, "yellow");
-      console.error("[VOLUME] Keyframe method error:", err);
-      console.error("[VOLUME] Error stack:", err.stack);
-      
-      // Fallback: Try direct setValue (some audio params might not support keyframes)
       try {
-        log(`[VOLUME] Step 38: Trying fallback method (direct setValue, isTimeVarying=false)...`, "yellow");
-        log(`[VOLUME] Step 39: About to set linear value = ${finalValue.toFixed(6)} directly...`, "blue");
         const setValueAction = await gainParam.createSetValueAction(Number(finalValue), false);
-        log(`[VOLUME] Step 40: Fallback action created`, "blue");
-        
         await executeAction(project, setValueAction);
-        log(`[VOLUME] ✅ SUCCESS (fallback): Volume adjusted ${currentValueDb.toFixed(2)}dB → ${newValueDb.toFixed(2)}dB`, "green");
+        log(`Volume adjusted (fallback method)`, "green");
         return true;
       } catch (err2) {
-        log(`[VOLUME] ❌ ERROR: Both methods failed. Last error: ${err2.message || err2}`, "red");
-        console.error("[VOLUME] Fallback method error:", err2);
-        console.error("[VOLUME] Error stack:", err2.stack);
+        log(`Failed to set volume: ${err2.message}`, "red");
         return false;
       }
     }
   } catch (err) {
     log(`Error adjusting volume: ${err}`, "red");
-    console.error("adjustVolume error details:", err);
     return false;
   }
 }
