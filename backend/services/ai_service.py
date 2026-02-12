@@ -5,7 +5,7 @@ This service uses the AI provider abstraction layer to process prompts.
 The provider can be switched via configuration without code changes.
 """
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from .ai_provider import AIProvider
 from .providers import GeminiProvider, GroqProvider
@@ -69,8 +69,122 @@ def process_prompt(user_prompt: str, context_params: Dict[str, Any] = None) -> D
             "message": str  # Human-readable explanation
         }
     """
+    preprocessed = _maybe_handle_color_request(user_prompt)
+    if preprocessed:
+        return preprocessed
+
     provider = _get_provider()
     return provider.process_prompt(user_prompt, context_params)
+
+
+def _maybe_handle_color_request(user_prompt: str) -> Optional[Dict[str, Any]]:
+    """
+    Fast-path color requests to adjustColor to avoid filter ambiguity.
+    Returns a response dict when a match is found, else None.
+    """
+    if not user_prompt:
+        return None
+
+    prompt = user_prompt.lower()
+    color_defaults = {
+        "exposure": 0.5,
+        "contrast": 10,
+        "highlights": 10,
+        "shadows": 10,
+        "whites": 10,
+        "blacks": 10,
+        "saturation": 10,
+        "vibrance": 10,
+        "temperature": 5,
+        "tint": 5
+    }
+
+    preset_map = {
+        "cinematic": {"contrast": 15, "shadows": -10, "highlights": -10, "saturation": -5, "vibrance": 10},
+        "dramatic": {"contrast": 20, "shadows": -15, "highlights": -10, "vibrance": 15},
+        "warm": {"temperature": 10, "tint": 2, "saturation": 5},
+        "cool": {"temperature": -10, "tint": -2, "saturation": 5}
+    }
+
+    synonym_map = {
+        "brighter": {"exposure": 0.5},
+        "brighten": {"exposure": 0.5},
+        "darker": {"exposure": -0.5},
+        "darken": {"exposure": -0.5},
+        "warmer": {"temperature": 5},
+        "cooler": {"temperature": -5}
+    }
+
+    # Preset keywords (relative adjustments)
+    for preset_key, preset_params in preset_map.items():
+        if preset_key in prompt and ("look" in prompt or "apply" in prompt or "make" in prompt):
+            return {
+                "action": "adjustColor",
+                "parameters": {"relative": True, **preset_params},
+                "confidence": 1.0,
+                "message": "Executing adjustColor"
+            }
+
+    if not any(key in prompt for key in color_defaults):
+        for synonym_key, synonym_params in synonym_map.items():
+            if synonym_key in prompt:
+                return {
+                    "action": "adjustColor",
+                    "parameters": {"relative": True, **synonym_params},
+                    "confidence": 1.0,
+                    "message": "Executing adjustColor"
+                }
+        return None
+
+    increase_words = ["increase", "raise", "boost", "more", "up"]
+    decrease_words = ["decrease", "lower", "reduce", "less", "down"]
+    set_words = ["set", "to", "at", "equals", "=", "is"]
+
+    is_set = any(word in prompt for word in set_words)
+    direction = None
+    if any(word in prompt for word in increase_words):
+        direction = 1
+    elif any(word in prompt for word in decrease_words):
+        direction = -1
+
+    if not is_set and direction is None:
+        return None
+
+    params: Dict[str, Any] = {"relative": not is_set}
+    for key, default_delta in color_defaults.items():
+        if key in prompt:
+            delta = default_delta
+
+            # Try to extract a specific number for this key (e.g., "increase exposure by 2")
+            match = None
+            try:
+                import re
+                pattern = rf"{key}[^0-9-]*(-?\d+(?:\.\d+)?)"
+                match = re.search(pattern, prompt)
+            except Exception:
+                match = None
+
+            if match:
+                try:
+                    delta = float(match.group(1))
+                except ValueError:
+                    delta = default_delta
+
+            if is_set:
+                params[key] = delta
+            else:
+                # Apply direction to the delta (increase/decrease)
+                params[key] = abs(delta) * direction
+
+    if len(params) == 1:
+        return None
+
+    return {
+        "action": "adjustColor",
+        "parameters": params,
+        "confidence": 1.0,
+        "message": "Executing adjustColor"
+    }
 
 
 def get_available_actions() -> Dict[str, Dict[str, Any]]:

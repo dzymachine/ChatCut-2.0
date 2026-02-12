@@ -13,6 +13,7 @@ import {
   applyFilter,
   applyTransition, 
   applyBlur,
+  adjustColor,
   modifyEffectParameter,
   modifyEffectParametersBatch,
   getEffectParameters,
@@ -143,6 +144,30 @@ const actionRegistry = {
       }
     }
     
+    return { successful, failed };
+  },
+
+  /**
+   * Adjust Lumetri color parameters by index mapping
+   * Parameters: { exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, saturation, vibrance, addIfMissing }
+   */
+  adjustColor: async (trackItems, parameters = {}) => {
+    const items = Array.isArray(trackItems) ? trackItems : [trackItems];
+
+    let successful = 0;
+    let failed = 0;
+
+    for (const item of items) {
+      try {
+        const result = await adjustColor(item, parameters);
+        successful += result.successful;
+        failed += result.failed;
+      } catch (err) {
+        console.error("Error adjusting color on clip:", err);
+        failed += 1;
+      }
+    }
+
     return { successful, failed };
   },
 

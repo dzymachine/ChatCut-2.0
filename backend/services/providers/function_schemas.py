@@ -417,6 +417,28 @@ def get_function_declarations():
             }
         },
         {
+            "name": "adjustColor",
+            "description": "Adjust Lumetri color parameters using index mapping. Use this for exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, saturation, and vibrance. Values are raw Lumetri values (no min/max exposed by the API). Only include the parameters the user specifies.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "exposure": {"type": "number", "description": "Lumetri Exposure value"},
+                    "contrast": {"type": "number", "description": "Lumetri Contrast value"},
+                    "highlights": {"type": "number", "description": "Lumetri Highlights value"},
+                    "shadows": {"type": "number", "description": "Lumetri Shadows value"},
+                    "whites": {"type": "number", "description": "Lumetri Whites value"},
+                    "blacks": {"type": "number", "description": "Lumetri Blacks value"},
+                    "temperature": {"type": "number", "description": "Lumetri Temperature value"},
+                    "tint": {"type": "number", "description": "Lumetri Tint value"},
+                    "saturation": {"type": "number", "description": "Lumetri Saturation value"},
+                    "vibrance": {"type": "number", "description": "Lumetri Vibrance value"},
+                    "addIfMissing": {"type": "boolean", "description": "Add Lumetri if missing (default true)"},
+                    "relative": {"type": "boolean", "description": "If true, values are deltas added to current values"}
+                },
+                "required": []
+            }
+        },
+        {
             "name": "adjustVolume",
             "description": "Adjust audio volume in decibels. Positive values make it louder, negative make it quieter. IMPORTANT: If user just says 'louder' or 'increase volume' without a number, use 3. If 'quieter' or 'decrease', use -3. For 'much louder'/'a lot', use 6 or -6.",
             "parameters": {
@@ -537,4 +559,17 @@ Rules:
 - For animated=true, only set if user says "gradual", "slow", "smooth", "over time", "from X to Y"
 - Use askClarification for greetings, ambiguous requests, or when multiple options match
 - For blur requests, use applyBlur action (not applyFilter)
+- For exposure/contrast/saturation/temperature/tint/highlights/shadows/whites/blacks/vibrance, use adjustColor and do not ask to choose between filters
+- If user says increase/decrease exposure/contrast/saturation/temperature/tint/highlights/shadows/whites/blacks/vibrance without a number, use defaults:
+    - exposure: +0.5 / -0.5
+    - contrast: +10 / -10
+    - highlights: +10 / -10
+    - shadows: +10 / -10
+    - whites: +10 / -10
+    - blacks: +10 / -10
+    - saturation: +10 / -10
+    - vibrance: +10 / -10
+    - temperature: +5 / -5
+    - tint: +5 / -5
+- If user mentions multiple color properties in one request, include them all in a single adjustColor call
 """

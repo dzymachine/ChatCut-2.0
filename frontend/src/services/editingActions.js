@@ -133,6 +133,221 @@ async function executeAction(project, action) {
   });
 }
 
+// ============ LUMETRI BY INDEX ============
+const LUMETRI_MATCHNAME = "AE.ADBE Lumetri";
+const LUMETRI_PARAM_INDEX = {
+  exposure: 19,
+  contrast: 20,
+  highlights: 21,
+  shadows: 22,
+  whites: 23,
+  blacks: 24,
+  temperature: 14,
+  tint: 15,
+  saturation: 16,
+  vibrance: 42
+};
+
+async function getLumetriComponent(trackItem, project, addIfMissing = true) {
+  const componentChain = await trackItem.getComponentChain();
+  if (!componentChain) {
+    log("[LUMETRI] No component chain", "red");
+    return null;
+  }
+
+  let lumetriComp = null;
+  let compCount = await componentChain.getComponentCount();
+
+  for (let ci = 0; ci < compCount; ci++) {
+    const comp = await componentChain.getComponentAtIndex(ci);
+    const matchName = await comp.getMatchName();
+    if (matchName === LUMETRI_MATCHNAME) {
+      lumetriComp = comp;
+      break;
+    }
+  }
+
+  if (!lumetriComp && addIfMissing) {
+    log("[LUMETRI] Lumetri not found. Adding it...", "yellow");
+    try {
+      const lumetriComponent = await ppro.VideoFilterFactory.createComponent(LUMETRI_MATCHNAME);
+      const appendAction = await componentChain.createAppendComponentAction(lumetriComponent);
+      await executeAction(project, appendAction);
+
+      compCount = await componentChain.getComponentCount();
+      for (let ci = 0; ci < compCount; ci++) {
+        const comp = await componentChain.getComponentAtIndex(ci);
+        const matchName = await comp.getMatchName();
+        if (matchName === LUMETRI_MATCHNAME) {
+          lumetriComp = comp;
+          break;
+        }
+      }
+    } catch (err) {
+      log(`[LUMETRI] Failed to add Lumetri: ${err.message || err}`, "red");
+      return null;
+    }
+  }
+
+  return lumetriComp;
+}
+
+async function setLumetriParamByIndex(lumetriComp, project, paramIndex, value) {
+  const paramCount = await lumetriComp.getParamCount();
+  if (paramIndex >= paramCount) {
+    log(`[LUMETRI] Parameter index ${paramIndex} out of range (max: ${paramCount - 1})`, "red");
+    return false;
+  }
+
+  const param = await lumetriComp.getParam(paramIndex);
+  const displayName = param.displayName || "(no name)";
+  const keyframe = await param.createKeyframe(Number(value));
+  const setAction = await param.createSetValueAction(keyframe, true);
+  await executeAction(project, setAction);
+
+  log(`[LUMETRI] Set ${displayName} (index ${paramIndex}) to ${value}`, "green");
+  return true;
+}
+
+async function getLumetriParamValue(param) {
+  try {
+    let raw = null;
+
+    if (typeof param.getValueAtTime === "function") {
+      try {
+        const time = ppro.TickTime.createWithSeconds(0);
+        raw = await param.getValueAtTime(time);
+      } catch (err) {
+        raw = null;
+      }
+    }
+
+    if (raw === null || raw === undefined) {
+      raw = await param.getValue();
+    }
+
+    if (raw && typeof raw.getValue === "function") {
+      return await raw.getValue();
+    }
+
+    if (raw && typeof raw.value === "number") {
+      return raw.value;
+    }
+
+    if (typeof raw === "number") {
+      return raw;
+    }
+  } catch (err) {
+    // Ignore and fall through
+  }
+
+  return null;
+}
+
+/**
+ * Adjust Lumetri parameters by index mapping.
+ * Values are raw Lumetri values (no min/max exposed by the API).
+ * @param {TrackItem} trackItem - The clip to modify
+ * @param {Object} options - Color adjustment options
+ * @param {number} options.exposure - Exposure value
+ * @param {number} options.contrast - Contrast value
+ * @param {number} options.highlights - Highlights value
+ * @param {number} options.shadows - Shadows value
+ * @param {number} options.whites - Whites value
+ * @param {number} options.blacks - Blacks value
+ * @param {number} options.temperature - Temperature value
+ * @param {number} options.tint - Tint value
+ * @param {number} options.saturation - Saturation value
+ * @param {number} options.vibrance - Vibrance value
+ * @param {boolean} options.addIfMissing - Add Lumetri if missing (default: true)
+ * @param {boolean} options.relative - Treat values as deltas added to current values (default: false)
+ * @returns {Promise<{successful: number, failed: number}>}
+ */
+export async function adjustColor(trackItem, options = {}) {
+  const {
+    addIfMissing = true,
+    relative = false,
+    exposure,
+    contrast,
+    highlights,
+    shadows,
+    whites,
+    blacks,
+    temperature,
+    tint,
+    saturation,
+    vibrance
+  } = options;
+
+  if (!trackItem) {
+    log("[LUMETRI] No track item provided", "red");
+    return { successful: 0, failed: 0 };
+  }
+
+  const project = await ppro.Project.getActiveProject();
+  if (!project) {
+    log("[LUMETRI] No active project", "red");
+    return { successful: 0, failed: 0 };
+  }
+
+  const lumetriComp = await getLumetriComponent(trackItem, project, addIfMissing);
+  if (!lumetriComp) {
+    log("[LUMETRI] Lumetri not found or could not be added", "red");
+    return { successful: 0, failed: 0 };
+  }
+
+  const updates = {
+    exposure,
+    contrast,
+    highlights,
+    shadows,
+    whites,
+    blacks,
+    temperature,
+    tint,
+    saturation,
+    vibrance
+  };
+
+  const entries = Object.entries(updates).filter(([, value]) => value !== undefined && value !== null);
+  if (entries.length === 0) {
+    log("[LUMETRI] No values provided", "yellow");
+    return { successful: 0, failed: 0 };
+  }
+
+  let successful = 0;
+  let failed = 0;
+
+  for (const [name, value] of entries) {
+    const paramIndex = LUMETRI_PARAM_INDEX[name];
+    if (paramIndex === undefined) {
+      failed += 1;
+      continue;
+    }
+
+    try {
+      let newValue = value;
+
+      if (relative) {
+        const param = await lumetriComp.getParam(paramIndex);
+        const currentValue = await getLumetriParamValue(param);
+        if (typeof currentValue === "number") {
+          newValue = currentValue + Number(value);
+        }
+      }
+
+      const result = await setLumetriParamByIndex(lumetriComp, project, paramIndex, newValue);
+      if (result) successful += 1;
+      else failed += 1;
+    } catch (err) {
+      log(`[LUMETRI] Failed to set ${name}: ${err.message || err}`, "red");
+      failed += 1;
+    }
+  }
+
+  return { successful, failed };
+}
+
 // ============ KEYFRAME HELPERS ============
 
 /**
