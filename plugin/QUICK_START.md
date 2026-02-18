@@ -19,6 +19,7 @@
 ### 2. Backend Setup (1 minute)
 
 ```bash
+# From the repo root
 cd backend
 pip install -r requirements.txt
 ```
@@ -48,7 +49,7 @@ python main.py
 
 Open **NEW terminal**:
 ```bash
-cd frontend
+cd plugin/frontend
 npm run watch
 ```
 

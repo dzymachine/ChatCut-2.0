@@ -48,7 +48,8 @@ __pycache__/
 # Backend output
 backend/output/
 
-# Claude Code / AI tools
+# IDE / AI tools
+.cursor/
 .claude/
 .claude-flow/
 .swarm/
@@ -57,8 +58,14 @@ backend/output/
 # Root-level markdown files (except important docs)
 /*.md
 !README.md
-!COLAB_GUIDE.md
 !LICENSE.md
+
+# Plugin analysis/dev docs (gitignored)
+plugin/COMPREHENSIVE_ANALYSIS.md
+plugin/GAP_ANALYSIS_AND_ACTION_ITEMS.md
+plugin/GAP_ANALYSIS_SUMMARY.md
+plugin/browser.md
+plugin/status.md
 
 # Test media files
 *.mp4

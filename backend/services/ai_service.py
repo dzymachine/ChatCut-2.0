@@ -50,7 +50,7 @@ def _get_provider() -> AIProvider:
     return _PROVIDER_INSTANCE
 
 
-def process_prompt(user_prompt: str, context_params: Dict[str, Any] = None) -> Dict[str, Any]:
+def process_prompt(user_prompt: str, context_params: Dict[str, Any] = None, client_type: str = "premiere") -> Dict[str, Any]:
     """
     Process user prompt and extract structured action with parameters.
     
@@ -60,6 +60,7 @@ def process_prompt(user_prompt: str, context_params: Dict[str, Any] = None) -> D
     Args:
         user_prompt: Natural language user request (e.g., "zoom in by 120%")
         context_params: Optional context parameters (e.g., selected effect settings)
+        client_type: "premiere" for plugin, "desktop" for standalone editor
     
     Returns:
         {
@@ -74,7 +75,7 @@ def process_prompt(user_prompt: str, context_params: Dict[str, Any] = None) -> D
         return preprocessed
 
     provider = _get_provider()
-    return provider.process_prompt(user_prompt, context_params)
+    return provider.process_prompt(user_prompt, context_params, client_type=client_type)
 
 
 def _maybe_handle_color_request(user_prompt: str) -> Optional[Dict[str, Any]]:

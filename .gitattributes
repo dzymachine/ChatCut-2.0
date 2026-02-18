@@ -1,0 +1,28 @@
+# Enforce LF line endings for all text files (prevents Mac/Windows conflicts)
+* text=auto eol=lf
+
+# Windows-specific scripts keep CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files — don't touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.mp4 binary
+*.mov binary
+*.avi binary
+*.mkv binary
+*.webm binary
+*.mp3 binary
+*.wav binary
+*.flac binary
+*.ogg binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

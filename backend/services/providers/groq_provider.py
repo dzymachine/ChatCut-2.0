@@ -96,11 +96,12 @@ class GroqProvider(AIProvider):
             tools.append(tool)
         return tools
     
-    def process_prompt(self, user_prompt: str, context_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def process_prompt(self, user_prompt: str, context_params: Optional[Dict[str, Any]] = None, client_type: str = "premiere") -> Dict[str, Any]:
         """
         Process user prompt using Groq's tool calling API.
         
         Uses the same function schemas as Gemini for consistency.
+        client_type: "premiere" for plugin schemas, "desktop" for standalone editor schemas
         """
         if not self.is_configured():
             return AIProviderResult.failure(
@@ -115,11 +116,18 @@ class GroqProvider(AIProvider):
             return cached
         
         try:
-            from .function_schemas import get_function_declarations, FUNCTION_CALLING_SYSTEM_PROMPT
+            # Select schemas based on client type
+            if client_type == "desktop":
+                from .function_schemas_desktop import get_desktop_function_declarations, DESKTOP_FUNCTION_CALLING_SYSTEM_PROMPT
+                declarations = get_desktop_function_declarations()
+                system_prompt = DESKTOP_FUNCTION_CALLING_SYSTEM_PROMPT
+            else:
+                from .function_schemas import get_function_declarations, FUNCTION_CALLING_SYSTEM_PROMPT
+                declarations = get_function_declarations()
+                system_prompt = FUNCTION_CALLING_SYSTEM_PROMPT
             
             # Convert Gemini function declarations to Groq/OpenAI format
-            gemini_declarations = get_function_declarations()
-            tools = self._convert_gemini_schema_to_groq(gemini_declarations)
+            tools = self._convert_gemini_schema_to_groq(declarations)
             
             # Format context if available
             prompt = user_prompt
@@ -132,7 +140,7 @@ class GroqProvider(AIProvider):
             
             # Build messages
             messages = [
-                {"role": "system", "content": FUNCTION_CALLING_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ]
             

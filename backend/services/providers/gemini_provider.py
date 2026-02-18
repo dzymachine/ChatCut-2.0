@@ -51,12 +51,14 @@ class GeminiProvider(AIProvider):
         """Get provider name"""
         return "gemini"
     
-    def process_prompt(self, user_prompt: str, context_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def process_prompt(self, user_prompt: str, context_params: Optional[Dict[str, Any]] = None, client_type: str = "premiere") -> Dict[str, Any]:
         """
         Process user prompt using Gemini Function Calling API.
         
         This uses structured function declarations instead of a 600+ line prompt,
         reducing token costs by ~98% and improving reliability.
+        
+        client_type: "premiere" for plugin schemas, "desktop" for standalone editor schemas
         """
         if not self.is_configured():
             return AIProviderResult.failure(
@@ -70,18 +72,26 @@ class GeminiProvider(AIProvider):
             print("[Gemini] Cache hit")
             return cached
         try:
-            from .function_schemas import get_function_declarations, FUNCTION_CALLING_SYSTEM_PROMPT
+            # Select schemas based on client type
+            if client_type == "desktop":
+                from .function_schemas_desktop import get_desktop_function_declarations, DESKTOP_FUNCTION_CALLING_SYSTEM_PROMPT
+                declarations = get_desktop_function_declarations()
+                system_prompt = DESKTOP_FUNCTION_CALLING_SYSTEM_PROMPT
+            else:
+                from .function_schemas import get_function_declarations, FUNCTION_CALLING_SYSTEM_PROMPT
+                declarations = get_function_declarations()
+                system_prompt = FUNCTION_CALLING_SYSTEM_PROMPT
             
             # Get Gemini model
             model_name = self.model_name.replace("models/", "") if self.model_name.startswith("models/") else self.model_name
             
             # Build the tools (function declarations)
-            tools = [{"function_declarations": get_function_declarations()}]
+            tools = [{"function_declarations": declarations}]
             
             # Create model with system instruction
             model = genai.GenerativeModel(
                 model_name,
-                system_instruction=FUNCTION_CALLING_SYSTEM_PROMPT
+                system_instruction=system_prompt
             )
             
             # Format context if available

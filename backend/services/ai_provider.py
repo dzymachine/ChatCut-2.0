@@ -13,13 +13,14 @@ class AIProvider(ABC):
     """Abstract base class for AI providers"""
     
     @abstractmethod
-    def process_prompt(self, user_prompt: str, context_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def process_prompt(self, user_prompt: str, context_params: Optional[Dict[str, Any]] = None, client_type: str = "premiere") -> Dict[str, Any]:
         """
         Process user prompt and extract structured action with parameters.
         
         Args:
             user_prompt: Natural language user request
             context_params: Optional context parameters (e.g., selected effect settings)
+            client_type: "premiere" for plugin, "desktop" for standalone NLE editor
         
         Returns:
             {
@@ -27,7 +28,9 @@ class AIProvider(ABC):
                 "parameters": dict,        # Extracted parameters
                 "confidence": float,       # 0.0 to 1.0
                 "message": str,            # Human-readable explanation
-                "error": str | None       # Error code if failed
+                "error": str | None,       # Error code if failed
+                "actions": list | None,    # Multiple actions (optional)
+                "response": str            # Alias for message (frontend compat)
             }
         """
         pass

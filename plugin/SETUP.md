@@ -21,7 +21,7 @@
 ## Step 2: Backend Setup
 
 ```bash
-# Navigate to backend directory
+# Navigate to backend directory (at the repo root)
 cd backend
 
 # Install Python dependencies
@@ -57,8 +57,8 @@ Health: http://localhost:3001/health
 Open a **new terminal**:
 
 ```bash
-# Navigate to frontend directory
-cd frontend
+# Navigate to plugin frontend directory
+cd plugin/frontend
 
 # Install dependencies (if you haven't already)
 npm install
@@ -176,7 +176,7 @@ index.html  199 bytes
 
 ### Making Frontend Changes
 
-1. Edit files in `frontend/src/`
+1. Edit files in `plugin/frontend/src/`
 2. Webpack will auto-rebuild (if `npm run watch` is running)
 3. In UXP Developer Tools, click ••• → "Reload"
 4. Panel updates automatically!

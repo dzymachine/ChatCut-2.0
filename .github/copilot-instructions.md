@@ -1,46 +1,65 @@
-Project: ChatCut (UXP extension)
+Project: ChatCut
 
-Purpose: brief instructions to help AI agents make small, correct edits to this UXP/React-based Premiere Pro panel.
+Purpose: brief instructions to help AI agents work with this project, which has two versions:
+1. **Plugin** (`plugin/`) — A UXP extension for Adobe Premiere Pro
+2. **Web** (`web/`) — A standalone Next.js + Tauri desktop application
+
+Both versions share a common Python backend (`backend/`).
+
+---
+
+## Backend (Shared)
+
+- `backend/` — Python FastAPI backend server (AI providers, Redis cache). Used by both plugin and web.
+- `backend/main.py` — FastAPI entry point (runs on port 3001).
+- `backend/services/providers/` — AI provider implementations (Gemini, Groq).
+- `docker-compose.yml` — Docker orchestration for backend + Redis.
+
+Build & run: `cd backend && python main.py` (or `docker compose up` from repo root)
+
+---
+
+## Plugin (Premiere Pro UXP Extension)
+
+Plugin frontend code lives under `plugin/frontend/`.
 
 Key files
-- `plugin/manifest.json` — plugin identity, entrypoint (panel id `apps`), host/version and icons. Update `name`/`label` here for branding changes.
-- `plugin/index.html` — webview shell. Avoid changing global shims unless necessary.
-- `src/index.jsx` — bootstraps the UXP `entrypoints` and registers the panel controller. Look here for menu items and lifecycle hooks.
-- `src/panels/App.jsx` — top-level React panel component (renders `Container`).
-- `src/components/*` — UI pieces: `header.jsx`, `content.jsx`, `footer.jsx`, `container.jsx`. Prefer local component edits over adding new global state.
+- `plugin/frontend/plugin/manifest.json` — plugin identity, entrypoint (panel id `apps`), host/version and icons.
+- `plugin/frontend/plugin/index.html` — webview shell.
+- `plugin/frontend/src/index.jsx` — bootstraps UXP `entrypoints` and registers the panel controller.
+- `plugin/frontend/src/panels/App.jsx` — top-level React panel component (renders `Container`).
+- `plugin/frontend/src/components/*` — UI pieces: `header.jsx`, `content.jsx`, `footer.jsx`, `container.jsx`.
 
 Architecture notes
-- Small single-panel React app using UXP entrypoints and a `PanelController` wrapper located in `src/controllers/PanelController.jsx`.
-- `Container` composes `Header`, `Content`, and `Footer`. `Container` owns a simple message array in state and passes `writeToConsole` and `clearConsole` to `Footer`.
-- Avoid introducing global state managers (Redux, Context) for small features; keep state in `Container` unless cross-panel/state sharing is needed.
+- Small single-panel React app using UXP entrypoints and a `PanelController` wrapper located in `plugin/frontend/src/controllers/PanelController.jsx`.
+- `Container` composes `Header`, `Content`, and `Footer`. `Container` owns a simple message array in state.
+- Backend runs on port 3001 (FastAPI). Supports Gemini and Groq AI providers.
 
-UI & patterns
-- Styling uses local CSS files next to components (`*.css`) and inline style tags in `Container`. Respect existing CSS variables like `--uxp-host-text-color-secondary`.
-- Components use Adobe Spectrum web components (`sp-body`, `sp-button`) alongside React. Keep semantic structure: interactive behavior should live on `sp-button` rather than raw divs.
-- When rendering lists, prefer stable keys (not array index) when possible — messages currently use default array indexes.
+Build & run (Plugin)
+- Backend: `cd backend && python main.py` (or `docker compose up` from repo root)
+- Frontend: `cd plugin/frontend && npm install && npm run build`
+- Load `plugin/frontend/dist/manifest.json` into UXP Developer Tools.
 
-Build & run
-- This project is bundled with webpack. The `plugin/index.html` loads `index.js` (built bundle). Typical local dev steps (if available in your environment):
-  - npm install
-  - npm run build (or the script in `package.json` that produces `index.js`)
-  - Load the built plugin folder into Premiere Pro UXP developer mode or use the host tooling you normally use.
-- Do not assume a specific `npm` script name; check `package.json` for exact scripts before running commands.
+---
+
+## Web (Next.js + Tauri Desktop Application)
+
+All web code lives under `web/`.
+
+- `web/src/app/` — Next.js app router pages
+- `web/src/components/` — React components (chat, editor, UI)
+- `web/src/lib/` — AI client, video engine, editor store
+- `web/src/hooks/` — Custom React hooks
+- `web/src-tauri/` — Rust backend (native file I/O, FFmpeg, system integration)
+
+Build & run (Web)
+- Backend: `cd backend && python main.py`
+- Frontend: `cd web && npm install && npm run dev`
+
+---
 
 Conventions & gotchas
-- Manifest: changing `id` is a breaking change for installed plugins. For branding, prefer updating `name` and entrypoint `label`.
-- File locations: panels live under `src/panels`, components under `src/components`. `src/index.jsx` wires entrypoints — change it to add menu items or lifecycle hooks.
-- Avoid network or external API calls without explicit permission in `manifest.json` (see `requiredPermissions.webview`).
-- Native host requires `require('premierepro')` in async functions — follow the existing pattern in `footer.jsx` for accessing project/sequence.
-
-Task-specific example: Add Chat UI
-- Place small, local UI inside `Footer` for the input and `send` button (visual only). The message array in `Container` is the correct place to push new messages.
-- For now, Send may log to console; to implement later: call `props.writeToConsole(draft)` from `Footer` and clear `draft`.
-
-When editing
-- Run quick local lint/type checks where available. After edits, run the webpack build to ensure `index.js` compiles.
+- Plugin manifest: changing `id` is a breaking change. Prefer updating `name` and `label`.
 - Prefer minimal, targeted edits. Keep changes to styles local to component CSS files.
-
-If uncertain ask the user for:
-- preferred npm script for building/running, and whether they want Send to post to the existing `message` array or to an external service.
 
 End of instructions.

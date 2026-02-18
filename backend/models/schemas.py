@@ -10,6 +10,8 @@ class ProcessPromptRequest(BaseModel):
     """Request model for processing user prompts"""
     prompt: str
     context_params: Optional[Dict[str, Any]] = None
+    # "premiere" for the Premiere Pro plugin, "desktop" for the standalone editor
+    client_type: Optional[str] = "premiere"
 
 
 class ProcessPromptResponse(BaseModel):
@@ -20,6 +22,8 @@ class ProcessPromptResponse(BaseModel):
     actions: Optional[List[Dict[str, Any]]] = None
     confidence: float = 0.0
     message: str = ""
+    # 'response' is an alias for message, used by the desktop frontend
+    response: Optional[str] = None
     error: Optional[str] = None
     raw_response: Optional[str] = None  # For debugging only
 

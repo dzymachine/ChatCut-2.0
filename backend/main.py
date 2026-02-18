@@ -71,9 +71,14 @@ async def process_user_prompt(request: ProcessPromptRequest):
     print(f"[AI] Processing prompt: {request.prompt}")
     if request.context_params:
         print(f"[AI] Context parameters: {len(request.context_params)} items")
+    client_type = request.client_type or "premiere"
+    print(f"[AI] Client type: {client_type}")
         
-    result = process_prompt(request.prompt, request.context_params)
+    result = process_prompt(request.prompt, request.context_params, client_type=client_type)
     print(f"[AI] Result: {result}")
+    # Ensure 'response' field is populated for frontend compatibility
+    if 'response' not in result or result.get('response') is None:
+        result['response'] = result.get('message', '')
     return ProcessPromptResponse(**result)
 
 

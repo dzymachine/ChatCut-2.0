@@ -112,6 +112,7 @@ We've successfully built the foundation and AI integration for ChatCut MVP.
 
 ### 1. Start Backend
 ```bash
+# From the repo root
 cd backend
 pip install -r requirements.txt
 # Create .env with your GEMINI_API_KEY
@@ -120,14 +121,14 @@ python main.py
 
 ### 2. Start Frontend
 ```bash
-cd frontend
+cd plugin/frontend
 npm install  # if not done already
 npm run watch
 ```
 
 ### 3. Load in Premiere Pro
 - Open UXP Developer Tools
-- Add Plugin: `frontend/dist/manifest.json`
+- Add Plugin: `plugin/frontend/dist/manifest.json`
 - Load the plugin
 - Open panel: Window → Extensions → ChatCut
 
