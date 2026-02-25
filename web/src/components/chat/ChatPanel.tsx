@@ -30,7 +30,11 @@ export function ChatPanel() {
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      // Find the viewport element inside ScrollArea
+      const viewport = scrollRef.current.querySelector('[data-slot="scroll-area-viewport"]');
+      if (viewport) {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
     }
   }, [chatMessages]);
 
