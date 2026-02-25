@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore, isVideoFile } from "@/lib/store/editor-store";
+import { executeAction } from "@/lib/commands/command-handler";
 import { TRACK_HEIGHT, RULER_HEIGHT, TRACK_HEADER_WIDTH } from "@/types/editor";
 import { TimelineToolbar } from "./TimelineToolbar";
 import { TimeRuler } from "./TimeRuler";
@@ -30,7 +31,6 @@ export function Timeline() {
   const setTimelinePanelHeight = useEditorStore((s) => s.setTimelinePanelHeight);
   const setTimelineZoom = useEditorStore((s) => s.setTimelineZoom);
   const selectedClipId = useEditorStore((s) => s.ui.selectedClipId);
-  const splitClip = useEditorStore((s) => s.splitClip);
   const removeClip = useEditorStore((s) => s.removeClip);
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
@@ -147,7 +147,7 @@ export function Timeline() {
           if (e.metaKey || e.ctrlKey) {
             e.preventDefault();
             if (selectedClipId) {
-              splitClip(selectedClipId, currentTime);
+              executeAction({ type: 'cut', clipId: selectedClipId, time: currentTime });
             }
           }
           break;
@@ -179,7 +179,6 @@ export function Timeline() {
     selectedClipId,
     currentTime,
     pixelsPerSecond,
-    splitClip,
     removeClip,
     setActiveTool,
     setTimelineZoom,
