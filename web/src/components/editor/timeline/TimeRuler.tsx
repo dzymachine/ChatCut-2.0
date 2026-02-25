@@ -77,28 +77,27 @@ export function TimeRuler({
     return result;
   }, [scrollLeft, visibleWidth, pixelsPerSecond, duration, majorInterval, minorInterval]);
 
-  // ── Scrubbing handlers ──
-  const timeFromMouseX = useCallback(
-    (clientX: number, rulerRect: DOMRect) => {
-      const x = clientX - rulerRect.left + scrollLeft;
-      // Don't clamp to clip duration — allow scrubbing into empty timeline gaps
-      return Math.max(0, x / pixelsPerSecond);
-    },
-    [pixelsPerSecond, scrollLeft]
-  );
-
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       e.preventDefault();
       const engine = getVideoEngine();
       const rulerRect = e.currentTarget.getBoundingClientRect();
-      const time = timeFromMouseX(e.clientX, rulerRect);
+      
+      // Calculate time from mouse position
+      // rulerRect.left is the ruler's position on screen
+      // clientX - rulerRect.left = position within the ruler (in pixels)
+      // For the ruler element, rulerRect.left already reflects horizontal scroll
+      // in the scroll container. Adding scrollLeft again double-counts it.
+      const xInContent = e.clientX - rulerRect.left;
+      const time = Math.max(0, xInContent / pixelsPerSecond);
+      
       engine.seek(time);
       isScrubbing.current = true;
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         if (!isScrubbing.current) return;
-        const t = timeFromMouseX(moveEvent.clientX, rulerRect);
+        const xInContent = moveEvent.clientX - rulerRect.left;
+        const t = Math.max(0, xInContent / pixelsPerSecond);
         engine.seek(t);
       };
 
@@ -111,7 +110,7 @@ export function TimeRuler({
       window.addEventListener("mousemove", handleMouseMove);
       window.addEventListener("mouseup", handleMouseUp);
     },
-    [timeFromMouseX]
+    [pixelsPerSecond]
   );
 
   return (
