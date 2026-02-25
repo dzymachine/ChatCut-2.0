@@ -34,6 +34,9 @@ export class VideoEngine {
   // More reliable than checking videoElement.seeking (stuck in WKWebView).
   private timeSyncSuppressedUntil = 0;
 
+  // Wall-clock time tracking for advancing playhead during gaps (no video playing)
+  private playStartWallTime: number | null = null;
+
   // Store reference for direct reads
   private getState: () => EditorStore;
 
@@ -193,32 +196,53 @@ export class VideoEngine {
 
   // ─── Playback Control ─────────────────────────────────────────────────
 
+  /**
+   * Maps timeline playhead time to source media time for a given clip.
+   * Formula: sourceTime = clip.sourceStart + (timelineTime - clip.timelineStart)
+   */
+  private mapTimelineToSourceTime(clip: Clip, timelineTime: number): number {
+    return clip.sourceStart + (timelineTime - clip.timelineStart);
+  }
+
   play(): void {
     if (!this.videoElement) return;
     // Premiere Pro behavior: play is a no-op when the timeline is empty.
-    const hasClips = this.getState().project.tracks.some(
+    const state = this.getState();
+    const hasClips = state.project.tracks.some(
       (t) => t.clips.length > 0
     );
     if (!hasClips) return;
 
-    // Sync the video element to the store's playhead position before
-    // starting playback. The store is the source of truth — scrubbing
-    // updates the store but not the video element, so they can diverge.
-    const storeTime = this.getState().playback.currentTime;
-    const videoDur = this.videoElement.duration || 0;
-    if (videoDur > 0) {
-      this.videoElement.currentTime = Math.min(storeTime, videoDur);
-      // Suppress render-loop time sync briefly so the stale pre-seek
-      // value doesn't flash the playhead back to the old position.
-      this.timeSyncSuppressedUntil = performance.now() + 150;
-    }
+    const timelineTime = state.playback.currentTime;
+    const clip = state.getClipAtTime(timelineTime);
 
-    this.videoElement.play().catch(console.error);
+    // Update playing state
+    state.setPlaying(true);
+    this.playStartWallTime = performance.now();
+
+    // Only start video playback if we're within a valid clip range.
+    // If in a gap, the render loop will advance time based on wall-clock.
+    if (clip && this.videoElement) {
+      const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+      const isInClipRange = timelineTime >= clip.timelineStart && timelineTime < clipEnd;
+
+      if (isInClipRange) {
+        const sourceTime = this.mapTimelineToSourceTime(clip, timelineTime);
+        const videoDur = this.videoElement.duration || 0;
+        
+        if (videoDur > 0) {
+          this.videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
+          this.timeSyncSuppressedUntil = performance.now() + 150;
+        }
+        this.videoElement.play().catch(console.error);
+      }
+    }
   }
 
   pause(): void {
     if (!this.videoElement) return;
     this.videoElement.pause();
+    this.playStartWallTime = null;
   }
 
   togglePlayback(): void {
@@ -236,13 +260,19 @@ export class VideoEngine {
 
     // Update the store first — the store is the source of truth for
     // the playhead position and is NOT clamped to the video's duration.
-    this.getState().setCurrentTime(safeTime);
+    const state = this.getState();
+    state.setCurrentTime(safeTime);
 
-    // Seek the video element (clamped to its actual duration so it
-    // doesn't throw). This positions the video for the canvas render.
+    // Map the timeline position to source media time and seek the video element.
+    const clip = state.getClipAtTime(safeTime);
+    if (!clip) return;
+
+    const sourceTime = this.mapTimelineToSourceTime(clip, safeTime);
     const videoDur = this.videoElement.duration || 0;
     if (videoDur > 0) {
-      this.videoElement.currentTime = Math.min(safeTime, videoDur);
+      this.videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
+      // Suppress render-loop time sync briefly
+      this.timeSyncSuppressedUntil = performance.now() + 150;
     }
   }
 
@@ -332,17 +362,54 @@ export class VideoEngine {
       this.lastFrameTime = now;
     }
 
-    // Sync playback time at full frame rate (60 fps) for smooth playhead.
-    // The native "timeupdate" event only fires ~4 times/sec, causing jitter.
-    // Skip during the brief suppression window after a programmatic seek
-    // so the stale pre-seek currentTime doesn't flash the playhead back.
-    if (
-      this.videoElement &&
-      !this.videoElement.paused &&
-      this.videoElement.readyState >= 2 &&
-      now > this.timeSyncSuppressedUntil
-    ) {
-      this.getState().setCurrentTime(this.videoElement.currentTime);
+    // Sync playback time based on either video element or wall-clock.
+    // - If video is playing: sync from video.currentTime (source time → timeline time)
+    // - If in a gap (playing but no video): advance based on elapsed wall time
+    // - Detect gap→clip transition and start video automatically
+    const state = this.getState();
+    const timelineTime = state.playback.currentTime;
+    const clip = state.getClipAtTime(timelineTime);
+
+    if (state.playback.isPlaying && now > this.timeSyncSuppressedUntil) {
+      if (
+        this.videoElement &&
+        !this.videoElement.paused &&
+        this.videoElement.readyState >= 2
+      ) {
+        // Video is actively playing — map source time back to timeline time
+        if (clip) {
+          const timelineTime = clip.timelineStart + (this.videoElement.currentTime - clip.sourceStart);
+          state.setCurrentTime(timelineTime);
+          this.playStartWallTime = now;
+        }
+      } else if (this.playStartWallTime !== null) {
+        // Video is paused or not ready, but timeline is playing (in a gap).
+        // Advance timeline based on wall-clock elapsed time.
+        const elapsedMs = now - this.playStartWallTime;
+        const elapsedSec = elapsedMs / 1000;
+        const newTime = state.playback.currentTime + elapsedSec;
+        state.setCurrentTime(newTime);
+        this.playStartWallTime = now;
+
+        // Check if we've entered a clip during gap playback
+        const clipAtNewTime = state.getClipAtTime(newTime);
+        if (clipAtNewTime && this.videoElement) {
+          const clipEnd = clipAtNewTime.timelineStart + (clipAtNewTime.sourceEnd - clipAtNewTime.sourceStart);
+          const isNowInClip = newTime >= clipAtNewTime.timelineStart && newTime < clipEnd;
+          
+          if (isNowInClip) {
+            // Transition from gap into clip — start video at correct source time
+            const sourceTime = this.mapTimelineToSourceTime(clipAtNewTime, newTime);
+            const videoDur = this.videoElement.duration || 0;
+            
+            if (videoDur > 0) {
+              this.videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
+              this.timeSyncSuppressedUntil = performance.now() + 150;
+            }
+            this.videoElement.play().catch(console.error);
+          }
+        }
+      }
     }
 
     // Process animations
@@ -389,15 +456,23 @@ export class VideoEngine {
 
     const { canvas, ctx, videoElement } = this;
     const state = this.getState();
-    const clip = state.getActiveClip();
 
     // Clear canvas
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    if (!clip) {
-      // No clip loaded — draw placeholder
+    // Check if any clips exist in the project
+    const hasClips = state.project.tracks.some((t) => t.clips.length > 0);
+    if (!hasClips) {
+      // No clips at all — draw placeholder
       this.drawPlaceholder();
+      return;
+    }
+
+    // Get clip at current playhead time (null if in a gap)
+    const clip = state.getClipAtTime(state.playback.currentTime);
+    if (!clip) {
+      // Clips exist but playhead is in a gap — keep black canvas
       return;
     }
 
