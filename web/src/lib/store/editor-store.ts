@@ -782,6 +782,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       effects: clip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
     };
 
+    // Save previous state for undo
+    const previousTracks = state.project.tracks;
+
     set((state) => {
       const newTracks = state.project.tracks.map((track) => {
         if (track.id !== trackId) return track;
@@ -801,6 +804,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           updatedAt: Date.now(),
         },
       };
+    });
+
+    // Push to undo stack
+    state.pushUndo({
+      type: 'split',
+      description: `Split clip at ${splitTimeSeconds.toFixed(1)}s`,
+      previousState: {
+        tracks: previousTracks,
+      },
     });
 
     return [clipA, clipB];
