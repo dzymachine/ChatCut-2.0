@@ -20,7 +20,7 @@ interface TrackLaneProps {
  * Contains TimelineClip components for each clip in the track.
  */
 export function TrackLane({ track, pixelsPerSecond, totalWidth, index }: TrackLaneProps) {
-  const selectedClipId = useEditorStore((s) => s.ui.selectedClipId);
+  const selectedClipIds = useEditorStore((s) => s.ui.selectedClipIds);
   const snapEnabled = useEditorStore((s) => s.timeline.snapEnabled);
   const snapThresholdPx = useEditorStore((s) => s.timeline.snapThresholdPx);
   const tracks = useEditorStore((s) => s.project.tracks);
@@ -48,6 +48,8 @@ export function TrackLane({ track, pixelsPerSecond, totalWidth, index }: TrackLa
     (e: React.MouseEvent) => {
       // Only if clicking directly on the lane (not a clip)
       if (e.target === e.currentTarget) {
+        // If user is holding ctrl/meta, don't clear selection (allow multi-select)
+        if (e.ctrlKey || e.metaKey) return;
         setSelectedClip(null);
       }
     },
@@ -74,7 +76,7 @@ export function TrackLane({ track, pixelsPerSecond, totalWidth, index }: TrackLa
           clip={clip}
           track={track}
           pixelsPerSecond={pixelsPerSecond}
-          isSelected={selectedClipId === clip.id}
+          isSelected={(selectedClipIds ?? []).includes(clip.id)}
           snapPoints={snapPoints}
           snapThresholdPx={snapThresholdPx}
           snapEnabled={snapEnabled}

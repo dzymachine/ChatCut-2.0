@@ -60,6 +60,8 @@ export function TimelineClip({
   snapEnabled,
 }: TimelineClipProps) {
   const setSelectedClip = useEditorStore((s) => s.setSelectedClip);
+  const toggleClipSelection = useEditorStore((s) => s.toggleClipSelection);
+  const moveSelectedClips = useEditorStore((s) => s.moveSelectedClips);
   const moveClip = useEditorStore((s) => s.moveClip);
   const trimClipStart = useEditorStore((s) => s.trimClipStart);
   const trimClipEnd = useEditorStore((s) => s.trimClipEnd);
@@ -73,6 +75,8 @@ export function TimelineClip({
     initialSourceStart: number;
     initialSourceEnd: number;
     hasMoved: boolean;
+    wasCtrl?: boolean;
+    selectedPositions?: Record<string, number>;
   } | null>(null);
 
   const clipDuration = clip.sourceEnd - clip.sourceStart;
@@ -142,6 +146,25 @@ export function TimelineClip({
 
       const zone = getZone(e);
 
+      const wasCtrl = e.ctrlKey || e.metaKey;
+
+      // If user clicked on an unselected clip without modifier, make it the sole selection
+      const storeState = useEditorStore.getState();
+      const currentlySelected = storeState.ui.selectedClipIds ?? [];
+      if (!wasCtrl && !currentlySelected.includes(clip.id)) {
+        // Select this clip as primary for the drag
+        storeState.setSelectedClip(clip.id, false);
+      }
+
+      // Capture initial positions for all selected clips so group moves don't compound
+      const selectedIds = useEditorStore.getState().ui.selectedClipIds ?? [];
+      const selectedPositions: Record<string, number> = {};
+      for (const t of useEditorStore.getState().project.tracks) {
+        for (const c of t.clips) {
+          if (selectedIds.includes(c.id)) selectedPositions[c.id] = c.timelineStart;
+        }
+      }
+
       dragState.current = {
         mode: zone,
         startMouseX: e.clientX,
@@ -149,6 +172,8 @@ export function TimelineClip({
         initialSourceStart: clip.sourceStart,
         initialSourceEnd: clip.sourceEnd,
         hasMoved: false,
+        wasCtrl,
+        selectedPositions,
       };
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
@@ -177,7 +202,14 @@ export function TimelineClip({
               newStart = snappedStart;
             }
 
-            moveClip(clip.id, Math.max(0, newStart));
+            // If multiple clips are selected and this clip is among them, move the whole group
+            const selected = useEditorStore.getState().ui.selectedClipIds ?? [];
+            if (selected.length > 1 && selected.includes(clip.id)) {
+              // Use the captured positions so moves do not compound across events
+              moveSelectedClips(newStart - dragState.current.initialTimelineStart, dragState.current.selectedPositions);
+            } else {
+              moveClip(clip.id, Math.max(0, newStart));
+            }
             break;
           }
           case "trim-start": {
@@ -208,8 +240,12 @@ export function TimelineClip({
 
       const handleMouseUp = () => {
         if (dragState.current && !dragState.current.hasMoved) {
-          // It was a click, not a drag — select
-          setSelectedClip(clip.id);
+          // It was a click, not a drag — select/toggle depending on modifier
+          if (dragState.current.wasCtrl) {
+            toggleClipSelection(clip.id);
+          } else {
+            setSelectedClip(clip.id, false);
+          }
         }
         dragState.current = null;
         window.removeEventListener("mousemove", handleMouseMove);
@@ -226,9 +262,11 @@ export function TimelineClip({
       getZone,
       snapTime,
       moveClip,
+      moveSelectedClips,
       trimClipStart,
       trimClipEnd,
       setSelectedClip,
+      toggleClipSelection,
     ]
   );
 

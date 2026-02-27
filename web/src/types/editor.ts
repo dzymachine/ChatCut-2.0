@@ -315,6 +315,8 @@ export type EditorPanel = 'chat' | 'properties' | 'media';
 export interface UIState {
   activePanel: EditorPanel;
   selectedClipId: string | null;
+  /** Ordered list of selected clip ids for multi-selection. Primary selection is last. */
+  selectedClipIds: string[];
   selectedTrackId: string | null;
   isChatOpen: boolean;
   isDragging: boolean;
@@ -324,6 +326,7 @@ export interface UIState {
 export const DEFAULT_UI_STATE: UIState = {
   activePanel: 'chat',
   selectedClipId: null,
+  selectedClipIds: [],
   selectedTrackId: null,
   isChatOpen: true,
   isDragging: false,

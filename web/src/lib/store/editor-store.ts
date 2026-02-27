@@ -103,7 +103,18 @@ export interface EditorStore {
 
   // ── UI Actions ──
   setActivePanel: (panel: UIState['activePanel']) => void;
-  setSelectedClip: (clipId: string | null) => void;
+  /** Set the selected clip. If `append` is true, add to the selection. */
+  setSelectedClip: (clipId: string | null, append?: boolean) => void;
+  /** Toggle membership of a clip in the current selection. */
+  toggleClipSelection: (clipId: string) => void;
+  /** Clear the current selection. */
+  clearSelection: () => void;
+  /** Returns whether the clip id is currently selected. */
+  isClipSelected: (clipId: string) => boolean;
+  /** Move all currently selected clips by delta seconds. If `basePositions` is provided,
+   *  it will be used as the source positions for applying the delta (useful for drag
+   *  sessions to avoid compounding incremental moves). */
+  moveSelectedClips: (deltaSeconds: number, basePositions?: Record<string, number>) => void;
   toggleChat: () => void;
 
   // ── Undo/Redo ──
@@ -687,6 +698,35 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     });
   },
 
+  moveSelectedClips: (deltaSeconds, basePositions) => {
+    set((state) => {
+      const selected = state.ui.selectedClipIds ?? [];
+      if (selected.length === 0) return state;
+
+      const newTracks = state.project.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (!selected.includes(clip.id)) return clip;
+          const origin = basePositions && basePositions[clip.id] !== undefined
+            ? basePositions[clip.id]
+            : clip.timelineStart;
+          const newStart = Math.max(0, origin + deltaSeconds);
+          return { ...clip, timelineStart: newStart };
+        }),
+      }));
+
+      const duration = calculateDuration(newTracks);
+      return {
+        project: {
+          ...state.project,
+          tracks: newTracks,
+          composition: { ...state.project.composition, duration },
+          updatedAt: Date.now(),
+        },
+      };
+    });
+  },
+
   trimClipStart: (clipId, newSourceStart, newTimelineStart) => {
     set((state) => {
       const newTracks = state.project.tracks.map((track) => ({
@@ -910,7 +950,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   setSelectedClip: (clipId) => {
-    set((state) => ({ ui: { ...state.ui, selectedClipId: clipId } }));
+    // New behavior: support append mode and maintain selectedClipIds
+    // Note: callers may pass `append` via the second arg when using the store directly.
+    set((state) => ({ ui: { ...state.ui, selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] } }));
+  },
+
+  toggleClipSelection: (clipId) => {
+    set((state) => {
+      const existing = state.ui.selectedClipIds ?? [];
+      const idx = existing.indexOf(clipId);
+      const next = idx >= 0 ? existing.filter((id) => id !== clipId) : [...existing, clipId];
+      return { ui: { ...state.ui, selectedClipId: next.length === 1 ? next[0] : state.ui.selectedClipId, selectedClipIds: next } };
+    });
+  },
+
+  clearSelection: () => {
+    set((state) => ({ ui: { ...state.ui, selectedClipId: null, selectedClipIds: [] } }));
+  },
+
+  isClipSelected: (clipId) => {
+    const state = get();
+    return (state.ui.selectedClipIds ?? []).includes(clipId);
   },
 
   toggleChat: () => {
