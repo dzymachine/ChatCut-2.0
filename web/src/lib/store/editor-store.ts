@@ -703,15 +703,41 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const selected = state.ui.selectedClipIds ?? [];
       if (selected.length === 0) return state;
 
+      // Find anchor point
+      let minStart = Infinity;
+      const clips = new Map<string, Clip>();
+
+      for (const track of state.project.tracks) {
+        for (const clip of track.clips) {
+          if (selected.includes(clip.id)) {
+            clips.set(clip.id, clip);
+            const origin = basePositions?.[clip.id] ?? clip.timelineStart;
+            minStart = Math.min(minStart, origin);
+          }
+        }
+      }
+
+      if (minStart === Infinity) return state;
+
+      // Calculate offsets from the minimum start
+      const offsets = new Map<string, number>();
+      for (const clipId of selected) {
+        const clip = clips.get(clipId);
+        if (clip) {
+          const origin = basePositions?.[clipId] ?? clip.timelineStart;
+          offsets.set(clipId, origin - minStart)
+        }
+      }
+
+      // Reposition clips based on relative offsets
+      const newMinStart = Math.max(0, minStart + deltaSeconds);
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
         clips: track.clips.map((clip) => {
           if (!selected.includes(clip.id)) return clip;
-          const origin = basePositions && basePositions[clip.id] !== undefined
-            ? basePositions[clip.id]
-            : clip.timelineStart;
-          const newStart = Math.max(0, origin + deltaSeconds);
-          return { ...clip, timelineStart: newStart };
+          const offset = offsets.get(clip.id) ?? 0;
+          const newStart = newMinStart + offset;
+          return {...clip, timelineStart: newStart};
         }),
       }));
 
