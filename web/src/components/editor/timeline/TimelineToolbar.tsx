@@ -2,6 +2,7 @@
 
 import { useCallback } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
+import { executeAction } from "@/lib/commands/command-handler";
 import type { TimelineTool } from "@/types/editor";
 import {
   Tooltip,
@@ -24,7 +25,6 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
   const pixelsPerSecond = useEditorStore((s) => s.timeline.pixelsPerSecond);
   const setTimelineZoom = useEditorStore((s) => s.setTimelineZoom);
   const selectedClipId = useEditorStore((s) => s.ui.selectedClipId);
-  const splitClip = useEditorStore((s) => s.splitClip);
   const removeClip = useEditorStore((s) => s.removeClip);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const addTrack = useEditorStore((s) => s.addTrack);
@@ -39,9 +39,9 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
 
   const handleSplit = useCallback(() => {
     if (selectedClipId) {
-      splitClip(selectedClipId, currentTime);
+      executeAction({ type: 'cut', clipId: selectedClipId, time: currentTime });
     }
-  }, [selectedClipId, splitClip, currentTime]);
+  }, [selectedClipId, currentTime]);
 
   const handleDelete = useCallback(() => {
     if (selectedClipId) {

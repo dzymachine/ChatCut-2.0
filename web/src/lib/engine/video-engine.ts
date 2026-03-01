@@ -452,19 +452,17 @@ export class VideoEngine {
 
   private renderFrame(): void {
     if (!this.canvas || !this.ctx || !this.videoElement) return;
-    if (this.videoElement.readyState < 2) return; // not enough data
+    if (this.videoElement.readyState < 2) return;
 
     const { canvas, ctx, videoElement } = this;
     const state = this.getState();
 
-    // Clear canvas
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Check if any clips exist in the project
     const hasClips = state.project.tracks.some((t) => t.clips.length > 0);
     if (!hasClips) {
-      // No clips at all — draw placeholder
       this.drawPlaceholder();
       return;
     }
@@ -472,16 +470,12 @@ export class VideoEngine {
     // Get clip at current playhead time (null if in a gap)
     const clip = state.getClipAtTime(state.playback.currentTime);
     if (!clip) {
-      // Clips exist but playhead is in a gap — keep black canvas
       return;
     }
 
-    // ── Gap check (Premiere-style) ──
-    // If the playhead is beyond the clip's timeline range, show black.
     const currentTime = state.playback.currentTime;
     const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
     if (currentTime < clip.timelineStart || currentTime >= clipEnd) {
-      // Playhead is in a gap — keep the black canvas (already cleared above)
       return;
     }
 
@@ -489,38 +483,28 @@ export class VideoEngine {
 
     ctx.save();
 
-    // 1. Apply opacity
     ctx.globalAlpha = transform.opacity;
-
-    // 2. Apply CSS filters
     ctx.filter = buildCSSFilter(transform.filters);
 
-    // 3. Move origin to center of canvas + position offset
     ctx.translate(
       canvas.width / 2 + transform.positionX,
       canvas.height / 2 + transform.positionY
     );
 
-    // 4. Apply rotation
     if (transform.rotation !== 0) {
       ctx.rotate((transform.rotation * Math.PI) / 180);
     }
 
-    // 5. Apply scale
     ctx.scale(transform.scale, transform.scale);
 
-    // 6. Draw video centered on the origin
-    // Calculate how to fit the video into the composition
     const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
     const canvasAspect = canvas.width / canvas.height;
 
     let drawWidth: number, drawHeight: number;
     if (videoAspect > canvasAspect) {
-      // Video is wider than canvas — fit by width
       drawWidth = canvas.width;
       drawHeight = canvas.width / videoAspect;
     } else {
-      // Video is taller than canvas — fit by height
       drawHeight = canvas.height;
       drawWidth = canvas.height * videoAspect;
     }
@@ -564,6 +548,11 @@ export class VideoEngine {
       this.play();
     } else {
       state.setPlaying(false);
+      // Park the playhead at the composition end, not the raw source end.
+      const compositionDuration = state.getDuration();
+      if (compositionDuration > 0) {
+        state.setCurrentTime(compositionDuration);
+      }
     }
   };
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useMemo } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
+import { executeAction } from "@/lib/commands/command-handler";
 import type { Clip, Track } from "@/types/editor";
 import { TRACK_HEIGHT } from "@/types/editor";
 
@@ -135,12 +136,11 @@ export function TimelineClip({
       // Check for razor tool
       const activeTool = useEditorStore.getState().timeline.activeTool;
       if (activeTool === "razor") {
-        // Split at click position
         const rect = clipRef.current?.getBoundingClientRect();
         if (!rect) return;
         const localX = e.clientX - rect.left;
         const splitTime = clip.timelineStart + localX / pixelsPerSecond;
-        useEditorStore.getState().splitClip(clip.id, splitTime);
+        executeAction({ type: 'cut', clipId: clip.id, time: splitTime });
         return;
       }
 

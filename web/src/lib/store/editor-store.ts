@@ -825,7 +825,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const clipDuration = clip.sourceEnd - clip.sourceStart;
     const clipEnd = clip.timelineStart + clipDuration;
 
-    // Split time must be within the clip (not at the very edges)
     if (splitTimeSeconds <= clip.timelineStart + 0.01 || splitTimeSeconds >= clipEnd - 0.01) {
       return null;
     }
@@ -833,13 +832,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const splitOffset = splitTimeSeconds - clip.timelineStart;
     const newSourceSplit = clip.sourceStart + splitOffset;
 
-    // First half: original clip truncated
     const clipA: Clip = {
       ...clip,
       sourceEnd: newSourceSplit,
     };
 
-    // Second half: new clip (deep copy effects)
     const clipB: Clip = {
       ...clip,
       id: uuid(),
@@ -851,14 +848,56 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     // Save previous state for undo
     const previousTracks = state.project.tracks;
 
+    // Find a linked audio clip on another track — same source, overlapping range
+    let linkedAudioClip: Clip | null = null;
+    let linkedAudioTrackId: string | null = null;
+    if (clip.type === 'video') {
+      for (const track of state.project.tracks) {
+        if (track.type !== 'audio') continue;
+        const found = track.clips.find((c) =>
+          c.sourceFileId === clip!.sourceFileId &&
+          c.timelineStart <= splitTimeSeconds &&
+          c.timelineStart + (c.sourceEnd - c.sourceStart) > splitTimeSeconds
+        );
+        if (found) {
+          linkedAudioClip = found;
+          linkedAudioTrackId = track.id;
+          break;
+        }
+      }
+    }
+
+    // Build the split pair for the linked audio clip (if any)
+    let audioA: Clip | null = null;
+    let audioB: Clip | null = null;
+    if (linkedAudioClip && linkedAudioTrackId) {
+      const audioSplitOffset = splitTimeSeconds - linkedAudioClip.timelineStart;
+      const audioSourceSplit = linkedAudioClip.sourceStart + audioSplitOffset;
+      audioA = { ...linkedAudioClip, sourceEnd: audioSourceSplit };
+      audioB = {
+        ...linkedAudioClip,
+        id: uuid(),
+        sourceStart: audioSourceSplit,
+        timelineStart: splitTimeSeconds,
+        effects: linkedAudioClip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
+      };
+    }
+
     set((state) => {
       const newTracks = state.project.tracks.map((track) => {
-        if (track.id !== trackId) return track;
-        const newClips = track.clips.map((c) => (c.id === clipId ? clipA : c));
-        // Insert clipB right after clipA
-        const idx = newClips.findIndex((c) => c.id === clipId);
-        newClips.splice(idx + 1, 0, clipB);
-        return { ...track, clips: newClips };
+        if (track.id === trackId) {
+          const newClips = track.clips.map((c) => (c.id === clipId ? clipA : c));
+          const idx = newClips.findIndex((c) => c.id === clipId);
+          newClips.splice(idx + 1, 0, clipB);
+          return { ...track, clips: newClips };
+        }
+        if (linkedAudioClip && audioA && audioB && track.id === linkedAudioTrackId) {
+          const newClips = track.clips.map((c) => (c.id === linkedAudioClip!.id ? audioA! : c));
+          const idx = newClips.findIndex((c) => c.id === linkedAudioClip!.id);
+          newClips.splice(idx + 1, 0, audioB!);
+          return { ...track, clips: newClips };
+        }
+        return track;
       });
 
       const duration = calculateDuration(newTracks);
