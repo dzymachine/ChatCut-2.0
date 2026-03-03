@@ -329,7 +329,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
           effects: createDefaultEffects(),
           transitions: [],
+          linkedClipId: clip.id
         };
+        clip.linkedClipId = audioClip.id;
       }
     }
 
@@ -372,6 +374,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       if (found) { removedClip = found; break; }
     }
 
+    // If the clip has a linked clip, remove it too
+    if (removedClip?.linkedClipId) {
+      // First remove the linked clip
+      set((state) => {
+        const newTracks = state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.filter((c) => c.id !== removedClip.linkedClipId),
+        }));
+        return { project: { ...state.project, tracks: newTracks, updatedAt: Date.now() } };
+      });
+    }
+  
     set((state) => {
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
@@ -644,19 +658,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }));
   },
 
-  // ── Clip Manipulation ──
-
   moveClip: (clipId, newTimelineStart, newTrackId) => {
     set((state) => {
       let sourceTrackId: string | null = null;
       let clip: Clip | null = null;
+      let linkedClipId: string | null = null;
 
-      // Find the clip and its current track
+      // Find the clip being moved and capture its linkedClipId
       for (const track of state.project.tracks) {
         const found = track.clips.find((c) => c.id === clipId);
         if (found) {
           clip = found;
           sourceTrackId = track.id;
+          linkedClipId = found.linkedClipId ?? null;
           break;
         }
       }
@@ -665,25 +679,53 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const targetTrackId = newTrackId ?? sourceTrackId;
       const updatedClip = { ...clip, timelineStart: Math.max(0, newTimelineStart) };
 
+      // If there's a linked clip, move it by the same delta
+      let linkedClip: Clip | null = null;
+      if (linkedClipId) {
+        for (const track of state.project.tracks) {
+          const found = track.clips.find((c) => c.id === linkedClipId);
+          if (found) {
+            linkedClip = found;
+            break;
+          }
+        }
+      }
+
       const newTracks = state.project.tracks.map((track) => {
+        let result = track;
+        
+        // Handle the primary clip move
         if (sourceTrackId === targetTrackId) {
-          // Same track — just update the clip
           if (track.id === sourceTrackId) {
-            return {
+            result = {
               ...track,
               clips: track.clips.map((c) => (c.id === clipId ? updatedClip : c)),
             };
           }
-          return track;
+        } else {
+          if (track.id === sourceTrackId) {
+            result = { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
+          }
+          if (track.id === targetTrackId) {
+            result = { ...track, clips: [...track.clips, updatedClip] };
+          }
         }
-        // Cross-track move
-        if (track.id === sourceTrackId) {
-          return { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
+
+        // Handle the linked clip move (same timeline delta)
+        if (linkedClip) {
+          const delta = newTimelineStart - clip.timelineStart;
+          const linkedNewTimelineStart = linkedClip.timelineStart + delta;
+          const updatedLinkedClip = { ...linkedClip, timelineStart: Math.max(0, linkedNewTimelineStart) };
+          
+          if (track.id === track.id) { // linked clip is on its own track
+            result = {
+              ...result,
+              clips: result.clips.map((c) => (c.id === linkedClipId ? updatedLinkedClip : c)),
+            };
+          }
         }
-        if (track.id === targetTrackId) {
-          return { ...track, clips: [...track.clips, updatedClip] };
-        }
-        return track;
+
+        return result;
       });
 
       const duration = calculateDuration(newTracks);
@@ -778,6 +820,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         },
       };
     });
+
   },
 
   trimClipEnd: (clipId, newSourceEnd) => {

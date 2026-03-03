@@ -93,6 +93,7 @@ export interface Clip {
 
   // Future: per-clip transitions, keyframes
   transitions: Transition[];
+  linkedClipId?: string | null; // for linked audio/video pairs
 }
 
 export type ClipType = 'video' | 'audio' | 'image' | 'text';
