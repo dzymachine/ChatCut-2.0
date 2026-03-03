@@ -369,27 +369,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     // Find the clip being removed so we can clean up its media file
     let removedClip: Clip | null = null;
+    let linkedClipId: string | null = null;
     for (const track of prevState.project.tracks) {
       const found = track.clips.find((c) => c.id === clipId);
-      if (found) { removedClip = found; break; }
-    }
-
-    // If the clip has a linked clip, remove it too
-    if (removedClip?.linkedClipId) {
-      // First remove the linked clip
-      set((state) => {
-        const newTracks = state.project.tracks.map((track) => ({
-          ...track,
-          clips: track.clips.filter((c) => c.id !== removedClip.linkedClipId),
-        }));
-        return { project: { ...state.project, tracks: newTracks, updatedAt: Date.now() } };
-      });
+      if (found) { 
+        removedClip = found; 
+        linkedClipId = found.linkedClipId ?? null;
+        break; 
+      }
     }
   
     set((state) => {
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
-        clips: track.clips.filter((c) => c.id !== clipId),
+        clips: track.clips.filter((c) => c.id !== clipId && c.id !== linkedClipId),
       }));
       const duration = calculateDuration(newTracks);
       const hasClipsLeft = newTracks.some((t) => t.clips.length > 0);
@@ -796,18 +789,51 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   trimClipStart: (clipId, newSourceStart, newTimelineStart) => {
+    let clip: Clip | null = null;
+    let linkedClipId: string | null = null;
+    
     set((state) => {
+      const delta = newTimelineStart - (state.project.tracks
+        .flatMap(t => t.clips)
+        .find(c => c.id === clipId)?.timelineStart ?? 0);
+
+      // Find the clip and its linked clip ID
+      for (const track of state.project.tracks) {
+        const found = track.clips.find((c) => c.id === clipId);
+        if (found) {
+          clip = found;
+          linkedClipId = found.linkedClipId ?? null;
+          break;
+        }
+      }
+
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
         clips: track.clips.map((clip) => {
-          if (clip.id !== clipId) return clip;
-          // Clamp: can't trim past sourceEnd, can't go below 0
-          const clampedSourceStart = Math.max(0, Math.min(newSourceStart, clip.sourceEnd - 0.05));
-          return {
-            ...clip,
-            sourceStart: clampedSourceStart,
-            timelineStart: Math.max(0, newTimelineStart),
-          };
+          if (clip.id !== clipId && clip.id !== linkedClipId) return clip;
+
+          if (clip.id === clipId) {
+            // Trim the primary clip
+            const clampedSourceStart = Math.max(0, Math.min(newSourceStart, clip.sourceEnd - 0.05));
+            return {
+              ...clip,
+              sourceStart: clampedSourceStart,
+              timelineStart: Math.max(0, newTimelineStart),
+            };
+          } else {
+            // Trim the linked clip by the same delta
+            const clampedSourceStart = Math.max(0, Math.min(
+              clip.sourceStart + (newSourceStart - (state.project.tracks
+                .flatMap(t => t.clips)
+                .find(c => c.id === clipId)?.sourceStart ?? 0)),
+              clip.sourceEnd - 0.05
+            ));
+            return {
+              ...clip,
+              sourceStart: clampedSourceStart,
+              timelineStart: Math.max(0, clip.timelineStart + delta),
+            };
+          }
         }),
       }));
       const duration = calculateDuration(newTracks);
@@ -825,16 +851,41 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   trimClipEnd: (clipId, newSourceEnd) => {
     set((state) => {
+      let linkedClipId: string | null = null;
+
+      // Find the clip and its linked clip ID
+      for (const track of state.project.tracks) {
+        const found = track.clips.find((c) => c.id === clipId);
+        if (found) {
+          linkedClipId = found.linkedClipId ?? null;
+          break;
+        }
+      }
+
       const mediaFiles = state.mediaFiles;
+      const primaryClip = state.project.tracks.flatMap(t => t.clips).find(c => c.id === clipId);
+      const delta = primaryClip ? newSourceEnd - primaryClip.sourceEnd : 0;
+
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
         clips: track.clips.map((clip) => {
-          if (clip.id !== clipId) return clip;
+          if (clip.id !== clipId && clip.id !== linkedClipId) return clip;
+
           const mediaFile = mediaFiles.get(clip.sourceFileId);
           const maxEnd = mediaFile?.duration ?? clip.sourceEnd;
-          // Clamp: can't trim past media duration, can't go below sourceStart
-          const clampedSourceEnd = Math.min(maxEnd, Math.max(newSourceEnd, clip.sourceStart + 0.05));
-          return { ...clip, sourceEnd: clampedSourceEnd };
+
+          if (clip.id === clipId) {
+            // Trim the primary clip
+            const clampedSourceEnd = Math.min(maxEnd, Math.max(newSourceEnd, clip.sourceStart + 0.05));
+            return { ...clip, sourceEnd: clampedSourceEnd };
+          } else {
+            // Trim the linked clip by the same delta
+            const clampedSourceEnd = Math.min(maxEnd, Math.max(
+              clip.sourceEnd + delta,
+              clip.sourceStart + 0.05
+            ));
+            return { ...clip, sourceEnd: clampedSourceEnd };
+          }
         }),
       }));
       const duration = calculateDuration(newTracks);
@@ -853,13 +904,28 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const state = get();
     let clip: Clip | null = null;
     let trackId: string | null = null;
+    let linkedId: string | null = null;
+    let linkedClip: Clip | null = null;
+    let linkedTrackId: string | null = null;
 
     for (const track of state.project.tracks) {
       const found = track.clips.find((c) => c.id === clipId);
       if (found) {
         clip = found;
         trackId = track.id;
+        linkedId = found.linkedClipId ?? null;
         break;
+      }
+    }
+
+    if (linkedId) {
+      for (const track of state.project.tracks) {
+        const found = track.clips.find((c) => c.id === linkedId);
+        if (found) {
+          linkedClip = found;
+          linkedTrackId = track.id;
+          break;
+        }
       }
     }
 
@@ -888,56 +954,42 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       effects: clip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
     };
 
-    // Save previous state for undo
-    const previousTracks = state.project.tracks;
+    let linkedA: Clip | null = null;
+    let linkedB: Clip | null = null;
 
-    // Find a linked audio clip on another track — same source, overlapping range
-    let linkedAudioClip: Clip | null = null;
-    let linkedAudioTrackId: string | null = null;
-    if (clip.type === 'video') {
-      for (const track of state.project.tracks) {
-        if (track.type !== 'audio') continue;
-        const found = track.clips.find((c) =>
-          c.sourceFileId === clip!.sourceFileId &&
-          c.timelineStart <= splitTimeSeconds &&
-          c.timelineStart + (c.sourceEnd - c.sourceStart) > splitTimeSeconds
-        );
-        if (found) {
-          linkedAudioClip = found;
-          linkedAudioTrackId = track.id;
-          break;
-        }
-      }
-    }
-
-    // Build the split pair for the linked audio clip (if any)
-    let audioA: Clip | null = null;
-    let audioB: Clip | null = null;
-    if (linkedAudioClip && linkedAudioTrackId) {
-      const audioSplitOffset = splitTimeSeconds - linkedAudioClip.timelineStart;
-      const audioSourceSplit = linkedAudioClip.sourceStart + audioSplitOffset;
-      audioA = { ...linkedAudioClip, sourceEnd: audioSourceSplit };
-      audioB = {
-        ...linkedAudioClip,
+    if (linkedClip) {
+      const linkedSplitOffset = splitTimeSeconds - linkedClip.timelineStart;
+      const linkedSourceSplit = linkedClip.sourceStart + linkedSplitOffset;
+      linkedA = {
+        ...linkedClip,
+        sourceEnd: linkedSourceSplit,
+      };
+      linkedB = {
+        ...linkedClip,
         id: uuid(),
-        sourceStart: audioSourceSplit,
+        sourceStart: linkedSourceSplit,
         timelineStart: splitTimeSeconds,
-        effects: linkedAudioClip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
+        effects: linkedClip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
       };
     }
 
+    // Save previous state for undo
+    const previousTracks = state.project.tracks;
+    
     set((state) => {
       const newTracks = state.project.tracks.map((track) => {
+        // handle primary clip split
         if (track.id === trackId) {
           const newClips = track.clips.map((c) => (c.id === clipId ? clipA : c));
           const idx = newClips.findIndex((c) => c.id === clipId);
           newClips.splice(idx + 1, 0, clipB);
           return { ...track, clips: newClips };
         }
-        if (linkedAudioClip && audioA && audioB && track.id === linkedAudioTrackId) {
-          const newClips = track.clips.map((c) => (c.id === linkedAudioClip!.id ? audioA! : c));
-          const idx = newClips.findIndex((c) => c.id === linkedAudioClip!.id);
-          newClips.splice(idx + 1, 0, audioB!);
+        // handle linked clip split if present
+        if (linkedId && linkedA && linkedB && track.id === linkedTrackId) {
+          const newClips = track.clips.map((c) => (c.id === linkedId ? linkedA : c));
+          const idx = newClips.findIndex((c) => c.id === linkedId);
+          newClips.splice(idx + 1, 0, linkedB);
           return { ...track, clips: newClips };
         }
         return track;
