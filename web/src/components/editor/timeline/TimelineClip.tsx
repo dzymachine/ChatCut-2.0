@@ -69,6 +69,12 @@ export function TimelineClip({
   const mediaFiles = useEditorStore((s) => s.mediaFiles);
 
   const clipRef = useRef<HTMLDivElement>(null);
+
+  // Keep a copy of the project state before a drag begins so we can
+  // create a single undo entry when the user releases the mouse.
+  const prevTracksRef = useRef<import('@/types/editor').Track[] | null>(null);
+  const prevPlaybackRef = useRef<import('@/types/editor').PlaybackState | null>(null);
+
   const dragState = useRef<{
     mode: "none" | "move" | "trim-start" | "trim-end";
     startMouseX: number;
@@ -148,22 +154,25 @@ export function TimelineClip({
 
       const wasCtrl = e.ctrlKey || e.metaKey;
 
-      // If user clicked on an unselected clip without modifier, make it the sole selection
+      // Selection handling: ctrl-click toggles, otherwise make this the only selected clip
       const storeState = useEditorStore.getState();
       const currentlySelected = storeState.ui.selectedClipIds ?? [];
       if (!wasCtrl && !currentlySelected.includes(clip.id)) {
-        // Select this clip as primary for the drag
         storeState.setSelectedClip(clip.id, false);
       }
 
-      // Capture initial positions for all selected clips so group moves don't compound
-      const selectedIds = useEditorStore.getState().ui.selectedClipIds ?? [];
+      // Capture positions of all selected clips for group dragging
+      const selectedIds = storeState.ui.selectedClipIds ?? [];
       const selectedPositions: Record<string, number> = {};
-      for (const t of useEditorStore.getState().project.tracks) {
+      for (const t of storeState.project.tracks) {
         for (const c of t.clips) {
           if (selectedIds.includes(c.id)) selectedPositions[c.id] = c.timelineStart;
         }
       }
+
+      // snapshot before edit for undo
+      prevTracksRef.current = structuredClone(storeState.project.tracks);
+      prevPlaybackRef.current = structuredClone(storeState.playback);
 
       dragState.current = {
         mode: zone,
@@ -239,15 +248,49 @@ export function TimelineClip({
       };
 
       const handleMouseUp = () => {
-        if (dragState.current && !dragState.current.hasMoved) {
-          // It was a click, not a drag — select/toggle depending on modifier
-          if (dragState.current.wasCtrl) {
-            toggleClipSelection(clip.id);
+        if (dragState.current) {
+          if (!dragState.current.hasMoved) {
+            // It was a click, not a drag — select or toggle depending on modifier
+            if (dragState.current.wasCtrl) {
+              toggleClipSelection(clip.id);
+            } else {
+              setSelectedClip(clip.id);
+            }
           } else {
-            setSelectedClip(clip.id, false);
+            // commit undo for the whole gesture
+            const prevTracks = prevTracksRef.current;
+            const prevPlayback = prevPlaybackRef.current;
+            if (prevTracks && prevPlayback) {
+              const afterStore = useEditorStore.getState();
+              const afterTracks = structuredClone(afterStore.project.tracks);
+              const afterPlayback = structuredClone(afterStore.playback);
+
+              let description = '';
+              switch (dragState.current.mode) {
+                case 'move':
+                  description = 'Move clip';
+                  break;
+                case 'trim-start':
+                  description = 'Trim clip start';
+                  break;
+                case 'trim-end':
+                  description = 'Trim clip end';
+                  break;
+                default:
+                  description = 'Edit clip';
+              }
+
+              useEditorStore.getState().pushUndo({
+                description,
+                previousState: { tracks: prevTracks, playback: prevPlayback },
+                nextState: { tracks: afterTracks, playback: afterPlayback },
+              });
+            }
           }
         }
         dragState.current = null;
+        prevTracksRef.current = null;
+        prevPlaybackRef.current = null;
         window.removeEventListener("mousemove", handleMouseMove);
         window.removeEventListener("mouseup", handleMouseUp);
       };

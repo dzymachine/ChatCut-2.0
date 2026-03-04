@@ -107,7 +107,6 @@ export function TransportControls({
           value={[isMuted ? 0 : volume]}
           onValueChange={([value]) => {
             setVolume(value);
-            if (value > 0 && isMuted) toggleMute();
           }}
           className="w-20 cursor-pointer"
         />

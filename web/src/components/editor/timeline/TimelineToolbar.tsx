@@ -45,9 +45,9 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
 
   const handleDelete = useCallback(() => {
     if (selectedClipId) {
-      removeClip(selectedClipId);
+      executeAction({ type: 'deleteClip', clipId: selectedClipId });
     }
-  }, [selectedClipId, removeClip]);
+  }, [selectedClipId]);
 
   const tools: Array<{ id: TimelineTool; label: string; icon: React.ReactNode; shortcut: string }> = [
     {

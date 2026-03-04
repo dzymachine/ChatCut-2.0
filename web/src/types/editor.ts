@@ -219,6 +219,7 @@ export type EditAction =
   | PlaybackRateAction
   | CutAction
   | TrimAction
+  | MoveAction
   | DeleteClipAction
   | ApplyEffectAction
   | RemoveEffectAction
@@ -288,6 +289,13 @@ export interface TrimAction {
 export interface DeleteClipAction {
   type: 'deleteClip';
   clipId: string;
+}
+
+export interface MoveAction {
+  type: 'move';
+  clipId: string;
+  newTimelineStart: number;
+  newTrackId?: string;
 }
 
 // ─── Commands (for undo/redo) ───────────────────────────────────────────────

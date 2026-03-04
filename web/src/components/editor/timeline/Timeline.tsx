@@ -154,7 +154,7 @@ export function Timeline() {
         case "Delete":
         case "Backspace":
           if (selectedClipId && !e.metaKey && !e.ctrlKey) {
-            removeClip(selectedClipId);
+            executeAction({ type: 'deleteClip', clipId: selectedClipId });
           }
           break;
         case "=":

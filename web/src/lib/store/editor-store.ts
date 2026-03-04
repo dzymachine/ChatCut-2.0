@@ -10,6 +10,7 @@
 
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
+import { getVideoEngine } from '@/lib/engine/video-engine';
 import {
   type Project,
   type Track,
@@ -288,6 +289,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   addClipFromMedia: (mediaFile: MediaFile, trackId?: string, timelineStart?: number) => {
+    // capture previous project state for undo
+    const prevTracks = structuredClone(get().project.tracks);
+    const prevPlayback = structuredClone(get().playback);
+
     const state = get();
     // Find the target track (first video track by default)
     const targetTrack = trackId
@@ -357,6 +362,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         },
         ui: { ...state.ui, selectedClipId: clip.id },
       };
+    });
+
+    // push undo entry for clip addition
+    const afterTracks = structuredClone(get().project.tracks);
+    const afterPlayback = structuredClone(get().playback);
+    get().pushUndo({
+      description: 'Add clip',
+      previousState: { tracks: prevTracks, playback: prevPlayback },
+      nextState: { tracks: afterTracks, playback: afterPlayback },
     });
 
     return clip;
@@ -924,6 +938,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   addTrack: (type, label) => {
+    // capture previous snapshot for undo
+    const prevTracks = structuredClone(get().project.tracks);
+    const prevPlayback = structuredClone(get().playback);
+
     const state = get();
     const count = state.project.tracks.filter((t) => t.type === type).length;
     const track: Track = {
@@ -944,6 +962,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       },
     }));
 
+    // push undo entry
+    const afterTracks = structuredClone(get().project.tracks);
+    const afterPlayback = structuredClone(get().playback);
+    get().pushUndo({
+      description: 'Add track',
+      previousState: { tracks: prevTracks, playback: prevPlayback },
+      nextState: { tracks: afterTracks, playback: afterPlayback },
+    });
+
     return track;
   },
 
@@ -962,15 +989,28 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   setVolume: (volume) => {
+    const clamped = Math.max(0, Math.min(1, volume));
     set((state) => ({
-      playback: { ...state.playback, volume: Math.max(0, Math.min(1, volume)) },
+      playback: { ...state.playback, volume: clamped },
     }));
+    // sync with video engine
+    const engine = getVideoEngine();
+    engine.setVolume(clamped);
+    // if the user increases volume while muted, unmute
+    const isMuted = get().playback.isMuted;
+    if (clamped > 0 && isMuted) {
+      get().toggleMute();
+    }
   },
 
   toggleMute: () => {
-    set((state) => ({
-      playback: { ...state.playback, isMuted: !state.playback.isMuted },
-    }));
+    set((state) => {
+      const newMuted = !state.playback.isMuted;
+      // also update engine
+      const engine = getVideoEngine();
+      engine.setMuted(newMuted);
+      return { playback: { ...state.playback, isMuted: newMuted } };
+    });
   },
 
   setPlaybackRate: (rate) => {
