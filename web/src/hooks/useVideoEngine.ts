@@ -7,6 +7,10 @@
  *
  * Also watches for clip deletions and cleans up the engine
  * (stops audio, unloads source) when the timeline becomes empty.
+ *
+ * RESILIENCE: If the engine's video source is missing but clips exist
+ * (e.g. after HMR re-initialized the engine), it automatically reloads
+ * the source from the first video clip's media file.
  */
 
 import { useEffect, useRef, useCallback, useState } from "react";
@@ -25,18 +29,30 @@ export function useVideoEngine() {
   );
   const prevHasClips = useRef(hasClips);
 
-  // Initialize engine when canvas is available
+  // Keep the engine's store reference in sync on EVERY render.
+  // After HMR re-evaluates the store module (creating a new Zustand store),
+  // the engine on globalThis still holds the old getState(). useEffect([])
+  // doesn't re-run on Fast Refresh, so this must live outside the effect.
+  // Guarded for SSR where the engine may be a stale globalThis singleton.
+  if (typeof window !== 'undefined') {
+    engineRef.current.refreshStoreRef(useEditorStore.getState);
+  }
+
+  // Initialize engine when canvas is available.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const engine = engineRef.current;
+    engine.refreshStoreRef(useEditorStore.getState);
     engine.init(canvas);
     setIsReady(true);
 
     return () => {
-      destroyVideoEngine();
-      engineRef.current = getVideoEngine(); // get fresh instance for next mount
+      if (process.env.NODE_ENV === 'production') {
+        destroyVideoEngine();
+        engineRef.current = getVideoEngine();
+      }
       setIsReady(false);
     };
   }, []);
@@ -51,7 +67,34 @@ export function useVideoEngine() {
     prevHasClips.current = hasClips;
   }, [hasClips]);
 
-  // Load a video file (browser mode — from File object)
+  // Auto-reload: if the engine lost its video source (e.g. after HMR)
+  // but clips still exist, reload from the first video clip's media file.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!hasClips || !isReady) return;
+    if (engine.hasSourceLoaded()) return;
+
+    const state = useEditorStore.getState();
+    let firstVideoClip = null;
+    for (const track of state.project.tracks) {
+      if (track.type !== 'video') continue;
+      if (track.clips.length > 0) {
+        firstVideoClip = track.clips[0];
+        break;
+      }
+    }
+    if (!firstVideoClip) return;
+
+    const mediaFile = state.mediaFiles.get(firstVideoClip.sourceFileId);
+    if (!mediaFile?.previewUrl) return;
+
+    engine.loadSource(mediaFile.previewUrl).then(() => {
+      engine.resizeCanvas();
+    }).catch((err) => {
+      console.warn('[useVideoEngine] Auto-reload failed:', err.message);
+    });
+  }, [hasClips, isReady]);
+
   const loadVideo = useCallback(async (file: File) => {
     const engine = engineRef.current;
     const store = useEditorStore.getState();
@@ -59,6 +102,11 @@ export function useVideoEngine() {
 
     try {
       const mediaFile = await store.addMediaFile(file);
+
+      if (!Number.isFinite(mediaFile.duration) || mediaFile.duration <= 0) {
+        throw new Error(`Invalid video duration: ${mediaFile.duration}`);
+      }
+
       const clip = store.addClipFromMedia(mediaFile);
 
       if (mediaFile.width && mediaFile.height) {
@@ -69,13 +117,12 @@ export function useVideoEngine() {
               ...state.project.composition,
               width: mediaFile.width!,
               height: mediaFile.height!,
-              duration: mediaFile.duration,
             },
           },
         }));
       }
 
-      await engine.loadSource(mediaFile.previewUrl);
+      await engine.loadSource(mediaFile.previewUrl, mediaFile.id);
       engine.resizeCanvas();
 
       return { mediaFile, clip };
@@ -87,7 +134,6 @@ export function useVideoEngine() {
     }
   }, []);
 
-  // Load a video from a native file path (Tauri desktop mode)
   const loadVideoFromPath = useCallback(async (filePath: string) => {
     const engine = engineRef.current;
     const store = useEditorStore.getState();
@@ -96,6 +142,11 @@ export function useVideoEngine() {
     try {
       const fileName = filePath.split(/[/\\]/).pop() || 'video';
       const mediaFile = await store.addMediaFileFromPath(filePath, fileName);
+
+      if (!Number.isFinite(mediaFile.duration) || mediaFile.duration <= 0) {
+        throw new Error(`Invalid video duration: ${mediaFile.duration}`);
+      }
+
       const clip = store.addClipFromMedia(mediaFile);
 
       if (mediaFile.width && mediaFile.height) {
@@ -106,13 +157,12 @@ export function useVideoEngine() {
               ...state.project.composition,
               width: mediaFile.width!,
               height: mediaFile.height!,
-              duration: mediaFile.duration,
             },
           },
         }));
       }
 
-      await engine.loadSource(mediaFile.previewUrl);
+      await engine.loadSource(mediaFile.previewUrl, mediaFile.id);
       engine.resizeCanvas();
 
       return { mediaFile, clip };

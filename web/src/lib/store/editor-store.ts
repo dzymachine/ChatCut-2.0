@@ -4,6 +4,30 @@
  * Uses Zustand with slices for organization.
  * The store is the single source of truth for the entire editor.
  *
+ * ──── SLICE INDEPENDENCE ────
+ *
+ * The store is divided into independent slices. Each slice's actions should
+ * ONLY modify their own slice. Cross-slice interactions must be explicitly
+ * documented. This prevents feature additions (e.g. clip linking) from
+ * accidentally breaking unrelated features (e.g. playback).
+ *
+ *   PLAYBACK SLICE (playback.*):
+ *     Modified by: setPlaying, setCurrentTime, setVolume, toggleMute,
+ *                  setPlaybackRate, VideoEngine render loop
+ *     Cross-slice: removeClip resets playback when timeline becomes empty
+ *
+ *   PROJECT SLICE (project.*):
+ *     Modified by: clip/track actions (add, remove, move, trim, split, link)
+ *     Cross-slice: NEVER modifies playback state (except removeClip edge case)
+ *
+ *   UI SLICE (ui.*):
+ *     Modified by: setActivePanel, setSelectedClip, toggleChat
+ *     Cross-slice: addClipFromMedia sets selectedClipIds
+ *
+ *   TIMELINE SLICE (timeline.*):
+ *     Modified by: setTimelineZoom, setSnapEnabled, setActiveTool
+ *     Cross-slice: none
+ *
  * IMPORTANT: The VideoEngine reads from this store DIRECTLY (not through React)
  * via `useEditorStore.getState()` to avoid rendering-induced frame drops.
  */
@@ -56,6 +80,7 @@ export interface EditorStore {
   // ── Undo/Redo ──
   undoStack: Command[];
   redoStack: Command[];
+  _undoBatch: { description: string; snapshotTracks: Track[]; snapshotPlayback: PlaybackState } | null;
 
   // ── Project Actions ──
   initProject: (name: string, width: number, height: number, fps: number) => void;
@@ -84,10 +109,18 @@ export interface EditorStore {
 
   // ── Clip Manipulation (Timeline) ──
   moveClip: (clipId: string, newTimelineStart: number, newTrackId?: string) => void;
+  moveSelectedClips: (deltaSeconds: number, basePositions?: Record<string, number>) => void;
   trimClipStart: (clipId: string, newSourceStart: number, newTimelineStart: number) => void;
   trimClipEnd: (clipId: string, newSourceEnd: number) => void;
   splitClip: (clipId: string, splitTimeSeconds: number) => [Clip, Clip] | null;
   addTrack: (type: TrackType, label?: string) => Track;
+
+  // ── Linked Clip Actions ──
+  getLinkedClips: (clipId: string) => Clip[];
+  unlinkClip: (clipId: string) => void;
+  linkClips: (clipIds: string[]) => void;
+  toggleLinkForSelection: () => void;
+  setLinkedSelectionEnabled: (enabled: boolean) => void;
 
   // ── Playback Actions ──
   setPlaying: (playing: boolean) => void;
@@ -104,18 +137,8 @@ export interface EditorStore {
 
   // ── UI Actions ──
   setActivePanel: (panel: UIState['activePanel']) => void;
-  /** Set the selected clip. If `append` is true, add to the selection. */
-  setSelectedClip: (clipId: string | null, append?: boolean) => void;
-  /** Toggle membership of a clip in the current selection. */
+  setSelectedClip: (clipId: string | null) => void;
   toggleClipSelection: (clipId: string) => void;
-  /** Clear the current selection. */
-  clearSelection: () => void;
-  /** Returns whether the clip id is currently selected. */
-  isClipSelected: (clipId: string) => boolean;
-  /** Move all currently selected clips by delta seconds. If `basePositions` is provided,
-   *  it will be used as the source positions for applying the delta (useful for drag
-   *  sessions to avoid compounding incremental moves). */
-  moveSelectedClips: (deltaSeconds: number, basePositions?: Record<string, number>) => void;
   toggleChat: () => void;
 
   // ── Undo/Redo ──
@@ -124,6 +147,9 @@ export interface EditorStore {
   redo: () => void;
   canUndo: () => boolean;
   canRedo: () => boolean;
+  beginUndoBatch: (description: string) => void;
+  commitUndoBatch: () => void;
+  cancelUndoBatch: () => void;
 
   // ── Helpers ──
   getActiveClip: () => Clip | null;
@@ -134,6 +160,30 @@ export interface EditorStore {
 
 // ─── Default Project ────────────────────────────────────────────────────────
 
+/** Default track properties shared by all new tracks. */
+const defaultTrackProps = {
+  clips: [] as Clip[],
+  muted: false,
+  locked: false,
+  visible: true,
+  volume: 1,
+  pan: 0,
+  solo: false,
+} as const;
+
+/**
+ * Creates the default project with 3 video tracks and 3 audio tracks.
+ *
+ * Track order in the array matches the Premiere Pro visual layout (top-to-bottom):
+ *   V3 (topmost video — highest compositing priority / foreground)
+ *   V2
+ *   V1 (bottommost video — lowest compositing priority / background)
+ *   A1 (topmost audio — default audio track)
+ *   A2
+ *   A3 (bottommost audio)
+ *
+ * Clips default to V1 and A1 (the "main" tracks).
+ */
 const createDefaultProject = (): Project => ({
   id: uuid(),
   name: 'Untitled Project',
@@ -144,32 +194,30 @@ const createDefaultProject = (): Project => ({
     duration: 0,
   },
   tracks: [
-    {
-      id: uuid(),
-      type: 'video',
-      label: 'Video 1',
-      clips: [],
-      muted: false,
-      locked: false,
-      visible: true,
-    },
-    {
-      id: uuid(),
-      type: 'audio',
-      label: 'Audio 1',
-      clips: [],
-      muted: false,
-      locked: false,
-      visible: true,
-    },
+    { id: uuid(), type: 'video', label: 'V3', ...defaultTrackProps },
+    { id: uuid(), type: 'video', label: 'V2', ...defaultTrackProps },
+    { id: uuid(), type: 'video', label: 'V1', ...defaultTrackProps },
+    { id: uuid(), type: 'audio', label: 'A1', ...defaultTrackProps },
+    { id: uuid(), type: 'audio', label: 'A2', ...defaultTrackProps },
+    { id: uuid(), type: 'audio', label: 'A3', ...defaultTrackProps },
   ],
   createdAt: Date.now(),
   updatedAt: Date.now(),
 });
 
 // ─── Store Implementation ───────────────────────────────────────────────────
+//
+// HMR RESILIENCE: The store is persisted on globalThis so it survives Hot
+// Module Replacement. Without this, every code edit in dev mode re-evaluates
+// this module, calling create() again and producing a fresh empty store —
+// wiping the user's loaded clips, media files, and timeline state. The engine
+// (also on globalThis) would then hold a stale getState() reference to the
+// OLD store while components bind to the NEW empty one, breaking playback.
 
-export const useEditorStore = create<EditorStore>((set, get) => ({
+const STORE_KEY = '__chatcut_editor_store__' as const;
+
+function createStore() {
+  return create<EditorStore>((set, get) => ({
   // ── Initial State ──
   project: createDefaultProject(),
   mediaFiles: new Map(),
@@ -180,6 +228,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   timeline: { ...DEFAULT_TIMELINE_STATE },
   undoStack: [],
   redoStack: [],
+  _undoBatch: null,
 
   // ── Project Actions ──
 
@@ -294,10 +343,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const prevPlayback = structuredClone(get().playback);
 
     const state = get();
-    // Find the target track (first video track by default)
+    // Find the target track.
+    // Default: V1 (the last video track in the array — the background/main track).
+    // This matches Premiere Pro behavior where new clips go to the lowest video track.
+    const videoTracks = state.project.tracks.filter((t) => t.type === 'video');
     const targetTrack = trackId
       ? state.project.tracks.find((t) => t.id === trackId)
-      : state.project.tracks.find((t) => t.type === 'video');
+      : videoTracks[videoTracks.length - 1];
 
     if (!targetTrack) throw new Error('No suitable track found');
 
@@ -307,6 +359,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       0
     );
 
+    // For video files, create a shared linkId for the video+audio pair
+    const sharedLinkId = mediaFile.type === 'video' ? uuid() : null;
+
     const clip: Clip = {
       id: uuid(),
       type: mediaFile.type === 'video' ? 'video' : mediaFile.type === 'audio' ? 'audio' : 'image',
@@ -314,6 +369,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       sourceStart: 0,
       sourceEnd: mediaFile.duration,
       timelineStart: startPos,
+      linkId: sharedLinkId,
       transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
       effects: createDefaultEffects(),
       transitions: [],
@@ -331,6 +387,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           sourceStart: 0,
           sourceEnd: mediaFile.duration,
           timelineStart: startPos,
+          linkId: sharedLinkId,
           transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
           effects: createDefaultEffects(),
           transitions: [],
@@ -360,7 +417,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           composition: { ...state.project.composition, duration },
           updatedAt: Date.now(),
         },
-        ui: { ...state.ui, selectedClipId: clip.id },
+        ui: { ...state.ui, selectedClipIds: [clip.id] },
       };
     });
 
@@ -379,31 +436,53 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   removeClip: (clipId: string) => {
     const prevState = get();
 
-    // Find the clip being removed so we can clean up its media file
+    // Find the clip being removed so we can determine linked clips
     let removedClip: Clip | null = null;
     for (const track of prevState.project.tracks) {
       const found = track.clips.find((c) => c.id === clipId);
       if (found) { removedClip = found; break; }
     }
 
+    // Collect all clip IDs to remove (include linked clips when linked selection is on)
+    const idsToRemove = new Set<string>([clipId]);
+    if (removedClip?.linkId && prevState.ui.linkedSelectionEnabled) {
+      for (const track of prevState.project.tracks) {
+        for (const c of track.clips) {
+          if (c.linkId === removedClip.linkId) {
+            idsToRemove.add(c.id);
+          }
+        }
+      }
+    }
+
+    // Collect all source file IDs referenced by removed clips
+    const removedSourceIds = new Set<string>();
+    for (const track of prevState.project.tracks) {
+      for (const c of track.clips) {
+        if (idsToRemove.has(c.id)) {
+          removedSourceIds.add(c.sourceFileId);
+        }
+      }
+    }
+
     set((state) => {
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
-        clips: track.clips.filter((c) => c.id !== clipId),
+        clips: track.clips.filter((c) => !idsToRemove.has(c.id)),
       }));
       const duration = calculateDuration(newTracks);
       const hasClipsLeft = newTracks.some((t) => t.clips.length > 0);
 
-      // Build updated media files — revoke blob URL if no other clip
-      // references this media file.
+      // Revoke blob URLs for media files no longer referenced
       let newMediaFiles = state.mediaFiles;
-      if (removedClip) {
-        const sourceId = removedClip.sourceFileId;
+      for (const sourceId of removedSourceIds) {
         const stillReferenced = newTracks.some((t) =>
           t.clips.some((c) => c.sourceFileId === sourceId)
         );
         if (!stillReferenced) {
-          newMediaFiles = new Map(state.mediaFiles);
+          if (newMediaFiles === state.mediaFiles) {
+            newMediaFiles = new Map(state.mediaFiles);
+          }
           const mediaFile = newMediaFiles.get(sourceId);
           if (mediaFile?.previewUrl?.startsWith('blob:')) {
             URL.revokeObjectURL(mediaFile.previewUrl);
@@ -422,8 +501,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         mediaFiles: newMediaFiles,
         ui: {
           ...state.ui,
-          selectedClipId:
-            state.ui.selectedClipId === clipId ? null : state.ui.selectedClipId,
+          selectedClipIds: state.ui.selectedClipIds.filter((id) => !idsToRemove.has(id)),
         },
         // Reset playback when the timeline becomes empty
         ...(hasClipsLeft
@@ -662,39 +740,55 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   moveClip: (clipId, newTimelineStart, newTrackId) => {
     set((state) => {
+      let primaryClip: Clip | null = null;
       let sourceTrackId: string | null = null;
-      let clip: Clip | null = null;
 
-      // Find the clip and its current track
+      // Find the primary clip and its current track
       for (const track of state.project.tracks) {
         const found = track.clips.find((c) => c.id === clipId);
         if (found) {
-          clip = found;
+          primaryClip = found;
           sourceTrackId = track.id;
           break;
         }
       }
-      if (!clip || !sourceTrackId) return state;
+      if (!primaryClip || !sourceTrackId) return state;
 
+      const delta = newTimelineStart - primaryClip.timelineStart;
       const targetTrackId = newTrackId ?? sourceTrackId;
-      const updatedClip = { ...clip, timelineStart: Math.max(0, newTimelineStart) };
+
+      // Collect linked clips that should move together
+      const linkedIds = new Set<string>();
+      if (primaryClip.linkId && state.ui.linkedSelectionEnabled) {
+        for (const track of state.project.tracks) {
+          for (const c of track.clips) {
+            if (c.linkId === primaryClip.linkId) {
+              linkedIds.add(c.id);
+            }
+          }
+        }
+      }
+      linkedIds.add(clipId);
 
       const newTracks = state.project.tracks.map((track) => {
-        if (sourceTrackId === targetTrackId) {
-          // Same track — just update the clip
-          if (track.id === sourceTrackId) {
-            return {
-              ...track,
-              clips: track.clips.map((c) => (c.id === clipId ? updatedClip : c)),
-            };
-          }
-          return track;
+        if (sourceTrackId === targetTrackId || !newTrackId) {
+          // Same track or no cross-track: apply delta to all linked clips
+          return {
+            ...track,
+            clips: track.clips.map((c) => {
+              if (linkedIds.has(c.id)) {
+                return { ...c, timelineStart: Math.max(0, c.timelineStart + delta) };
+              }
+              return c;
+            }),
+          };
         }
-        // Cross-track move
+        // Cross-track move only for the primary clip (linked clips stay on their tracks)
         if (track.id === sourceTrackId) {
           return { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
         }
         if (track.id === targetTrackId) {
+          const updatedClip = { ...primaryClip!, timelineStart: Math.max(0, newTimelineStart) };
           return { ...track, clips: [...track.clips, updatedClip] };
         }
         return track;
@@ -769,16 +863,36 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   trimClipStart: (clipId, newSourceStart, newTimelineStart) => {
     set((state) => {
+      // Find the primary clip to get its linkId and compute delta
+      let primaryClip: Clip | null = null;
+      for (const track of state.project.tracks) {
+        const found = track.clips.find((c) => c.id === clipId);
+        if (found) { primaryClip = found; break; }
+      }
+      if (!primaryClip) return state;
+
+      const sourceStartDelta = newSourceStart - primaryClip.sourceStart;
+      const timelineStartDelta = newTimelineStart - primaryClip.timelineStart;
+
+      // Collect linked clip IDs
+      const linkedIds = new Set<string>([clipId]);
+      if (primaryClip.linkId && state.ui.linkedSelectionEnabled) {
+        for (const track of state.project.tracks) {
+          for (const c of track.clips) {
+            if (c.linkId === primaryClip.linkId) linkedIds.add(c.id);
+          }
+        }
+      }
+
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
         clips: track.clips.map((clip) => {
-          if (clip.id !== clipId) return clip;
-          // Clamp: can't trim past sourceEnd, can't go below 0
-          const clampedSourceStart = Math.max(0, Math.min(newSourceStart, clip.sourceEnd - 0.05));
+          if (!linkedIds.has(clip.id)) return clip;
+          const clampedSourceStart = Math.max(0, Math.min(clip.sourceStart + sourceStartDelta, clip.sourceEnd - 0.05));
           return {
             ...clip,
             sourceStart: clampedSourceStart,
-            timelineStart: Math.max(0, newTimelineStart),
+            timelineStart: Math.max(0, clip.timelineStart + timelineStartDelta),
           };
         }),
       }));
@@ -797,14 +911,34 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   trimClipEnd: (clipId, newSourceEnd) => {
     set((state) => {
       const mediaFiles = state.mediaFiles;
+
+      // Find the primary clip to get its linkId and compute delta
+      let primaryClip: Clip | null = null;
+      for (const track of state.project.tracks) {
+        const found = track.clips.find((c) => c.id === clipId);
+        if (found) { primaryClip = found; break; }
+      }
+      if (!primaryClip) return state;
+
+      const sourceEndDelta = newSourceEnd - primaryClip.sourceEnd;
+
+      // Collect linked clip IDs
+      const linkedIds = new Set<string>([clipId]);
+      if (primaryClip.linkId && state.ui.linkedSelectionEnabled) {
+        for (const track of state.project.tracks) {
+          for (const c of track.clips) {
+            if (c.linkId === primaryClip.linkId) linkedIds.add(c.id);
+          }
+        }
+      }
+
       const newTracks = state.project.tracks.map((track) => ({
         ...track,
         clips: track.clips.map((clip) => {
-          if (clip.id !== clipId) return clip;
+          if (!linkedIds.has(clip.id)) return clip;
           const mediaFile = mediaFiles.get(clip.sourceFileId);
           const maxEnd = mediaFile?.duration ?? clip.sourceEnd;
-          // Clamp: can't trim past media duration, can't go below sourceStart
-          const clampedSourceEnd = Math.min(maxEnd, Math.max(newSourceEnd, clip.sourceStart + 0.05));
+          const clampedSourceEnd = Math.min(maxEnd, Math.max(clip.sourceEnd + sourceEndDelta, clip.sourceStart + 0.05));
           return { ...clip, sourceEnd: clampedSourceEnd };
         }),
       }));
@@ -843,12 +977,34 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return null;
     }
 
+    // Collect all linked clips that should also be split
+    const linkedClips: Array<{ clip: Clip; trackId: string }> = [];
+    if (clip.linkId && state.ui.linkedSelectionEnabled) {
+      for (const track of state.project.tracks) {
+        for (const c of track.clips) {
+          if (c.linkId === clip.linkId && c.id !== clipId) {
+            // Only split if the split time falls within this clip's range
+            const cEnd = c.timelineStart + (c.sourceEnd - c.sourceStart);
+            if (splitTimeSeconds > c.timelineStart + 0.01 && splitTimeSeconds < cEnd - 0.01) {
+              linkedClips.push({ clip: c, trackId: track.id });
+            }
+          }
+        }
+      }
+    }
+
+    // Generate new linkIds for the two halves (A and B)
+    const hasLinkedClips = linkedClips.length > 0;
+    const linkIdA = hasLinkedClips ? uuid() : clip.linkId;
+    const linkIdB = hasLinkedClips ? uuid() : clip.linkId;
+
     const splitOffset = splitTimeSeconds - clip.timelineStart;
     const newSourceSplit = clip.sourceStart + splitOffset;
 
     const clipA: Clip = {
       ...clip,
       sourceEnd: newSourceSplit,
+      linkId: linkIdA,
     };
 
     const clipB: Clip = {
@@ -856,45 +1012,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       id: uuid(),
       sourceStart: newSourceSplit,
       timelineStart: splitTimeSeconds,
+      linkId: linkIdB,
       effects: clip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
     };
 
-    // Save previous state for undo
-    const previousTracks = state.project.tracks;
-
-    // Find a linked audio clip on another track — same source, overlapping range
-    let linkedAudioClip: Clip | null = null;
-    let linkedAudioTrackId: string | null = null;
-    if (clip.type === 'video') {
-      for (const track of state.project.tracks) {
-        if (track.type !== 'audio') continue;
-        const found = track.clips.find((c) =>
-          c.sourceFileId === clip!.sourceFileId &&
-          c.timelineStart <= splitTimeSeconds &&
-          c.timelineStart + (c.sourceEnd - c.sourceStart) > splitTimeSeconds
-        );
-        if (found) {
-          linkedAudioClip = found;
-          linkedAudioTrackId = track.id;
-          break;
-        }
-      }
-    }
-
-    // Build the split pair for the linked audio clip (if any)
-    let audioA: Clip | null = null;
-    let audioB: Clip | null = null;
-    if (linkedAudioClip && linkedAudioTrackId) {
-      const audioSplitOffset = splitTimeSeconds - linkedAudioClip.timelineStart;
-      const audioSourceSplit = linkedAudioClip.sourceStart + audioSplitOffset;
-      audioA = { ...linkedAudioClip, sourceEnd: audioSourceSplit };
-      audioB = {
-        ...linkedAudioClip,
-        id: uuid(),
-        sourceStart: audioSourceSplit,
-        timelineStart: splitTimeSeconds,
-        effects: linkedAudioClip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
-      };
+    // Build split pairs for all linked clips
+    const linkedSplits = new Map<string, { a: Clip; b: Clip; trackId: string }>();
+    for (const { clip: lc, trackId: ltId } of linkedClips) {
+      const lcSplitOffset = splitTimeSeconds - lc.timelineStart;
+      const lcSourceSplit = lc.sourceStart + lcSplitOffset;
+      linkedSplits.set(lc.id, {
+        a: { ...lc, sourceEnd: lcSourceSplit, linkId: linkIdA },
+        b: {
+          ...lc,
+          id: uuid(),
+          sourceStart: lcSourceSplit,
+          timelineStart: splitTimeSeconds,
+          linkId: linkIdB,
+          effects: lc.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
+        },
+        trackId: ltId,
+      });
     }
 
     set((state) => {
@@ -905,13 +1043,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           newClips.splice(idx + 1, 0, clipB);
           return { ...track, clips: newClips };
         }
-        if (linkedAudioClip && audioA && audioB && track.id === linkedAudioTrackId) {
-          const newClips = track.clips.map((c) => (c.id === linkedAudioClip!.id ? audioA! : c));
-          const idx = newClips.findIndex((c) => c.id === linkedAudioClip!.id);
-          newClips.splice(idx + 1, 0, audioB!);
-          return { ...track, clips: newClips };
+        // Check if any linked clip on this track needs splitting
+        let modified = false;
+        let newClips = [...track.clips];
+        for (const [lcId, split] of linkedSplits) {
+          if (split.trackId === track.id) {
+            newClips = newClips.map((c) => (c.id === lcId ? split.a : c));
+            const idx = newClips.findIndex((c) => c.id === lcId);
+            newClips.splice(idx + 1, 0, split.b);
+            modified = true;
+          }
         }
-        return track;
+        return modified ? { ...track, clips: newClips } : track;
       });
 
       const duration = calculateDuration(newTracks);
@@ -925,15 +1068,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       };
     });
 
-    // Push to undo stack
-    state.pushUndo({
-      type: 'split',
-      description: `Split clip at ${splitTimeSeconds.toFixed(1)}s`,
-      previousState: {
-        tracks: previousTracks,
-      },
-    });
-
     return [clipA, clipB];
   },
 
@@ -944,23 +1078,37 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     const state = get();
     const count = state.project.tracks.filter((t) => t.type === type).length;
+    const defaultLabel = type === 'video'
+      ? `V${count + 1}`
+      : type === 'audio'
+        ? `A${count + 1}`
+        : `${type.charAt(0).toUpperCase() + type.slice(1)} ${count + 1}`;
     const track: Track = {
       id: uuid(),
       type,
-      label: label ?? `${type.charAt(0).toUpperCase() + type.slice(1)} ${count + 1}`,
-      clips: [],
-      muted: false,
-      locked: false,
-      visible: true,
+      label: label ?? defaultLabel,
+      ...defaultTrackProps,
     };
 
-    set((state) => ({
-      project: {
-        ...state.project,
-        tracks: [...state.project.tracks, track],
-        updatedAt: Date.now(),
-      },
-    }));
+    set((state) => {
+      const newTracks = [...state.project.tracks];
+      if (type === 'video') {
+        // Insert at position 0 (topmost video track = highest compositing priority)
+        newTracks.splice(0, 0, track);
+      } else if (type === 'audio') {
+        // Append after all existing tracks
+        newTracks.push(track);
+      } else {
+        newTracks.push(track);
+      }
+      return {
+        project: {
+          ...state.project,
+          tracks: newTracks,
+          updatedAt: Date.now(),
+        },
+      };
+    });
 
     // push undo entry
     const afterTracks = structuredClone(get().project.tracks);
@@ -972,6 +1120,99 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     });
 
     return track;
+  },
+
+  // ── Linked Clip Actions ──
+
+  getLinkedClips: (clipId) => {
+    const state = get();
+    let primaryClip: Clip | null = null;
+    for (const track of state.project.tracks) {
+      const found = track.clips.find((c) => c.id === clipId);
+      if (found) { primaryClip = found; break; }
+    }
+    if (!primaryClip?.linkId) return [];
+
+    const linked: Clip[] = [];
+    for (const track of state.project.tracks) {
+      for (const c of track.clips) {
+        if (c.linkId === primaryClip.linkId && c.id !== clipId) {
+          linked.push(c);
+        }
+      }
+    }
+    return linked;
+  },
+
+  unlinkClip: (clipId) => {
+    set((state) => {
+      let targetLinkId: string | null = null;
+      for (const track of state.project.tracks) {
+        const clip = track.clips.find((c) => c.id === clipId);
+        if (clip) { targetLinkId = clip.linkId; break; }
+      }
+      if (!targetLinkId) return state;
+
+      // Remove linkId from all clips in this link group
+      const newTracks = state.project.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) =>
+          clip.linkId === targetLinkId ? { ...clip, linkId: null } : clip
+        ),
+      }));
+      return {
+        project: { ...state.project, tracks: newTracks, updatedAt: Date.now() },
+      };
+    });
+  },
+
+  linkClips: (clipIds) => {
+    if (clipIds.length < 2) return;
+    const newLinkId = uuid();
+    set((state) => {
+      const idSet = new Set(clipIds);
+      const newTracks = state.project.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) =>
+          idSet.has(clip.id) ? { ...clip, linkId: newLinkId } : clip
+        ),
+      }));
+      return {
+        project: { ...state.project, tracks: newTracks, updatedAt: Date.now() },
+      };
+    });
+  },
+
+  toggleLinkForSelection: () => {
+    const state = get();
+    const selectedIds = state.ui.selectedClipIds;
+    if (selectedIds.length === 0) return;
+
+    const selectedClips: Clip[] = [];
+    for (const track of state.project.tracks) {
+      for (const c of track.clips) {
+        if (selectedIds.includes(c.id)) selectedClips.push(c);
+      }
+    }
+    if (selectedClips.length === 0) return;
+
+    const firstLinkId = selectedClips[0].linkId;
+    const allSameLinkId = firstLinkId !== null &&
+      selectedClips.every((c) => c.linkId === firstLinkId);
+
+    if (allSameLinkId) {
+      get().unlinkClip(selectedClips[0].id);
+    } else if (selectedClips.length >= 2) {
+      get().linkClips(selectedIds);
+    } else if (selectedClips.length === 1 && selectedClips[0].linkId) {
+      get().unlinkClip(selectedClips[0].id);
+    }
+  },
+
+  setLinkedSelectionEnabled: (enabled) => {
+    set((state) => ({
+      ui: { ...state.ui, linkedSelectionEnabled: enabled },
+    }));
   },
 
   // ── Playback Actions ──
@@ -1055,27 +1296,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   setSelectedClip: (clipId) => {
-    // New behavior: support append mode and maintain selectedClipIds
-    // Note: callers may pass `append` via the second arg when using the store directly.
-    set((state) => ({ ui: { ...state.ui, selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [] } }));
+    set((state) => ({
+      ui: { ...state.ui, selectedClipIds: clipId ? [clipId] : [] },
+    }));
   },
 
   toggleClipSelection: (clipId) => {
     set((state) => {
-      const existing = state.ui.selectedClipIds ?? [];
-      const idx = existing.indexOf(clipId);
-      const next = idx >= 0 ? existing.filter((id) => id !== clipId) : [...existing, clipId];
-      return { ui: { ...state.ui, selectedClipId: next.length === 1 ? next[0] : state.ui.selectedClipId, selectedClipIds: next } };
+      const current = state.ui.selectedClipIds;
+      const idx = current.indexOf(clipId);
+      if (idx >= 0) {
+        return { ui: { ...state.ui, selectedClipIds: current.filter((id) => id !== clipId) } };
+      }
+      return { ui: { ...state.ui, selectedClipIds: [clipId, ...current] } };
     });
-  },
-
-  clearSelection: () => {
-    set((state) => ({ ui: { ...state.ui, selectedClipId: null, selectedClipIds: [] } }));
-  },
-
-  isClipSelected: (clipId) => {
-    const state = get();
-    return (state.ui.selectedClipIds ?? []).includes(clipId);
   },
 
   toggleChat: () => {
@@ -1087,15 +1321,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   // ── Undo/Redo ──
 
   pushUndo: (command) => {
+    const MAX_UNDO = 50;
     const fullCommand: Command = {
       ...command,
       id: uuid(),
       timestamp: Date.now(),
     };
-    set((state) => ({
-      undoStack: [...state.undoStack, fullCommand],
-      redoStack: [], // clear redo stack on new action
-    }));
+    set((state) => {
+      const stack = [...state.undoStack, fullCommand];
+      if (stack.length > MAX_UNDO) stack.splice(0, stack.length - MAX_UNDO);
+      return {
+        undoStack: stack,
+        redoStack: [],
+      };
+    });
   },
 
   undo: () => {
@@ -1160,11 +1399,58 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   canUndo: () => get().undoStack.length > 0,
   canRedo: () => get().redoStack.length > 0,
 
+  beginUndoBatch: (description) => {
+    const state = get();
+    if (state._undoBatch) {
+      console.warn('[EditorStore] beginUndoBatch called while batch already active — committing previous batch');
+      state.commitUndoBatch();
+    }
+    set({
+      _undoBatch: {
+        description,
+        snapshotTracks: structuredClone(state.project.tracks),
+        snapshotPlayback: structuredClone(state.playback),
+      },
+    });
+  },
+
+  commitUndoBatch: () => {
+    const state = get();
+    const batch = state._undoBatch;
+    if (!batch) return;
+
+    const afterTracks = state.project.tracks;
+    const afterPlayback = state.playback;
+
+    const tracksChanged = JSON.stringify(batch.snapshotTracks) !== JSON.stringify(afterTracks);
+    const playbackChanged = JSON.stringify(batch.snapshotPlayback) !== JSON.stringify(afterPlayback);
+
+    if (tracksChanged || playbackChanged) {
+      state.pushUndo({
+        description: batch.description,
+        previousState: {
+          tracks: batch.snapshotTracks,
+          ...(playbackChanged ? { playback: batch.snapshotPlayback } : {}),
+        },
+        nextState: {
+          tracks: structuredClone(afterTracks),
+          ...(playbackChanged ? { playback: structuredClone(afterPlayback) } : {}),
+        },
+      });
+    }
+
+    set({ _undoBatch: null });
+  },
+
+  cancelUndoBatch: () => {
+    set({ _undoBatch: null });
+  },
+
   // ── Helpers ──
 
   getActiveClip: () => {
     const state = get();
-    const clipId = state.ui.selectedClipId;
+    const clipId = state.ui.selectedClipIds[0] ?? null;
     if (!clipId) {
       // If no clip is selected, return the first video clip
       for (const track of state.project.tracks) {
@@ -1204,6 +1490,69 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     return get().project.composition.duration;
   },
 }));
+}
+
+/**
+ * Validate that a cached store's state shape matches the current schema.
+ * Returns false if any expected field is missing or has the wrong type,
+ * which triggers a fresh store creation. This makes globalThis caching
+ * automatically self-healing after schema changes — no manual version
+ * bumps needed.
+ */
+function isStoreShapeValid(store: ReturnType<typeof createStore>): boolean {
+  try {
+    const s = store.getState();
+    return (
+      s != null &&
+      typeof s.project === 'object' &&
+      Array.isArray(s.project?.tracks) &&
+      s.project.tracks.every((t) =>
+        typeof t.visible === 'boolean' && typeof t.volume === 'number'
+      ) &&
+      typeof s.ui === 'object' &&
+      Array.isArray(s.ui?.selectedClipIds) &&
+      typeof s.ui?.linkedSelectionEnabled === 'boolean' &&
+      typeof s.timeline === 'object' &&
+      typeof s.timeline?.pixelsPerSecond === 'number' &&
+      typeof s.setSelectedClip === 'function' &&
+      typeof s.toggleClipSelection === 'function'
+    );
+  } catch {
+    return false;
+  }
+}
+
+const cached = (globalThis as Record<string, unknown>)[STORE_KEY] as ReturnType<typeof createStore> | undefined;
+export const useEditorStore = (cached && isStoreShapeValid(cached)) ? cached : (() => {
+  const store = createStore();
+  (globalThis as Record<string, unknown>)[STORE_KEY] = store;
+  return store;
+})();
+
+// DEV-ONLY: Expose store on window for debugging.
+if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+  (window as unknown as Record<string, unknown>).__chatcut_store__ = useEditorStore;
+}
+
+// ─── Undo Helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Wraps a synchronous operation in an undo batch. Captures state before,
+ * runs the function, then pushes a single undo entry for the entire change.
+ * Use for one-shot operations like delete. For drag gestures, use
+ * beginUndoBatch/commitUndoBatch directly.
+ */
+export function withUndo(description: string, fn: () => void): void {
+  const store = useEditorStore.getState();
+  store.beginUndoBatch(description);
+  try {
+    fn();
+    store.commitUndoBatch();
+  } catch (e) {
+    store.cancelUndoBatch();
+    throw e;
+  }
+}
 
 // ─── Utility Functions ──────────────────────────────────────────────────────
 
@@ -1304,7 +1653,7 @@ async function probeMediaDuration(
   const TIMEOUT_MS = 8000;
 
   try {
-    return await new Promise<{ duration: number; width?: number; height?: number }>((resolve, reject) => {
+    const raw = await new Promise<{ duration: number; width?: number; height?: number }>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error('Media metadata probe timed out'));
       }, TIMEOUT_MS);
@@ -1340,17 +1689,25 @@ async function probeMediaDuration(
         audio.src = url;
       }
     });
+
+    if (!Number.isFinite(raw.duration) || raw.duration <= 0) {
+      console.warn('[probeMediaDuration] Invalid duration from browser:', raw.duration);
+      throw new Error(`Invalid media duration: ${raw.duration}`);
+    }
+    return raw;
   } catch (browserError) {
-    // If browser probe failed and we have a native path, try FFprobe
     if (nativePath) {
       try {
         const { probeMedia } = await import('@/lib/tauri/bridge');
         const result = await probeMedia(nativePath);
-        return {
-          duration: result.duration,
-          width: result.width ?? undefined,
-          height: result.height ?? undefined,
-        };
+        if (Number.isFinite(result.duration) && result.duration > 0) {
+          return {
+            duration: result.duration,
+            width: result.width ?? undefined,
+            height: result.height ?? undefined,
+          };
+        }
+        console.warn('[probeMediaDuration] FFprobe returned invalid duration:', result.duration);
       } catch (ffprobeError) {
         console.warn('[probeMediaDuration] FFprobe fallback also failed:', ffprobeError);
       }

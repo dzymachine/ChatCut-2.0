@@ -73,6 +73,8 @@ interface SerializedClip {
   sourceStart: number;
   sourceEnd: number;
   timelineStart: number;
+  /** Linked clip group ID — null if unlinked. */
+  linkId: string | null;
   effects: AppliedEffect[];
   transitions: unknown[];
 }
@@ -95,11 +97,12 @@ export function serializeProject(): ChatCutProjectFile {
       return {
         id: clip.id,
         type: clip.type,
-        sourceFilePath: mediaFile?.nativePath ?? '', // Native disk path for Tauri; empty in browser
+        sourceFilePath: mediaFile?.nativePath ?? '',
         sourceFileName: mediaFile?.name ?? '',
         sourceStart: clip.sourceStart,
         sourceEnd: clip.sourceEnd,
         timelineStart: clip.timelineStart,
+        linkId: clip.linkId,
         effects: clip.effects.map((e) => ({
           id: e.id,
           effectId: e.effectId,
@@ -205,6 +208,7 @@ export async function applyLoadedProject(file: ChatCutProjectFile): Promise<void
       sourceStart: clip.sourceStart,
       sourceEnd: clip.sourceEnd,
       timelineStart: clip.timelineStart,
+      linkId: clip.linkId ?? null,
       transform: {
         scale: 1.0,
         positionX: 0,
@@ -227,6 +231,9 @@ export async function applyLoadedProject(file: ChatCutProjectFile): Promise<void
     muted: track.muted,
     locked: track.locked,
     visible: track.visible,
+    volume: (track as unknown as { volume?: number }).volume ?? 1,
+    pan: (track as unknown as { pan?: number }).pan ?? 0,
+    solo: (track as unknown as { solo?: boolean }).solo ?? false,
   }));
 
   // Apply to store — replace default project with loaded one

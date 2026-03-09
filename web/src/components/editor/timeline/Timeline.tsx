@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useEditorStore, isVideoFile } from "@/lib/store/editor-store";
+import { useEditorStore, isVideoFile, withUndo } from "@/lib/store/editor-store";
 import { executeAction } from "@/lib/commands/command-handler";
 import { TRACK_HEIGHT, RULER_HEIGHT, TRACK_HEADER_WIDTH } from "@/types/editor";
+import type { Track } from "@/types/editor";
 import { TimelineToolbar } from "./TimelineToolbar";
 import { TimeRuler } from "./TimeRuler";
 import { TrackHeader } from "./TrackHeader";
@@ -11,6 +12,8 @@ import { TrackLane } from "./TrackLane";
 import { Playhead } from "./Playhead";
 import { getVideoEngine } from "@/lib/engine/video-engine";
 import { showToast } from "@/components/ui/toast-notification";
+
+const TRACK_DIVIDER_HEIGHT = 4;
 
 /**
  * The Timeline panel — lives at the bottom of the editor.
@@ -30,23 +33,32 @@ export function Timeline() {
   const panelHeight = useEditorStore((s) => s.timeline.panelHeight);
   const setTimelinePanelHeight = useEditorStore((s) => s.setTimelinePanelHeight);
   const setTimelineZoom = useEditorStore((s) => s.setTimelineZoom);
-  const selectedClipId = useEditorStore((s) => s.ui.selectedClipId);
+  const selectedClipIds = useEditorStore((s) => s.ui.selectedClipIds);
   const removeClip = useEditorStore((s) => s.removeClip);
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
+
+  const toggleLinkForSelection = useEditorStore((s) => s.toggleLinkForSelection);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [visibleWidth, setVisibleWidth] = useState(800);
 
-  // ── Derived dimensions ──
-  const tracksHeight = tracks.length * TRACK_HEIGHT;
+  const videoTracks = useMemo(() => tracks.filter((t) => t.type === 'video'), [tracks]);
+  const audioTracks = useMemo(() => tracks.filter((t) => t.type === 'audio'), [tracks]);
+  const hasBothTypes = videoTracks.length > 0 && audioTracks.length > 0;
 
-  // Add 20% padding after the last clip, or at least 5s of empty space
+  const allTrackIds = useMemo(
+    () => [...videoTracks, ...audioTracks].map((t) => t.id),
+    [videoTracks, audioTracks]
+  );
+
+  const dividerHeight = hasBothTypes ? TRACK_DIVIDER_HEIGHT : 0;
+  const tracksHeight = tracks.length * TRACK_HEIGHT + dividerHeight;
+
   const contentDuration = Math.max(duration + Math.max(duration * 0.2, 5), 10);
   const totalWidth = contentDuration * pixelsPerSecond;
 
-  // ── Resize handle ──
   const resizeState = useRef<{ startY: number; startHeight: number } | null>(null);
 
   const handleResizeStart = useCallback(
@@ -56,7 +68,7 @@ export function Timeline() {
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         if (!resizeState.current) return;
-        const dy = resizeState.current.startY - moveEvent.clientY; // dragging up increases height
+        const dy = resizeState.current.startY - moveEvent.clientY;
         setTimelinePanelHeight(resizeState.current.startHeight + dy);
       };
 
@@ -72,14 +84,12 @@ export function Timeline() {
     [panelHeight, setTimelinePanelHeight]
   );
 
-  // ── Scroll sync ──
   const handleScroll = useCallback(() => {
     if (scrollContainerRef.current) {
       setScrollLeft(scrollContainerRef.current.scrollLeft);
     }
   }, []);
 
-  // ── Track visible width ──
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -96,7 +106,6 @@ export function Timeline() {
     return () => observer.disconnect();
   }, []);
 
-  // ── Mouse wheel zoom ──
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       if (e.metaKey || e.ctrlKey) {
@@ -108,20 +117,16 @@ export function Timeline() {
     [pixelsPerSecond, setTimelineZoom]
   );
 
-  // ── Zoom to fit ──
   const handleZoomToFit = useCallback(() => {
     if (duration <= 0) return;
     const containerWidth = scrollContainerRef.current?.clientWidth ?? 800;
-    // Leave some padding
     const newPPS = (containerWidth - 40) / Math.max(duration, 0.1);
     setTimelineZoom(newPPS);
-    // Scroll to start
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollLeft = 0;
     }
   }, [duration, setTimelineZoom]);
 
-  // ── Keyboard shortcuts (timeline-specific) ──
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -146,15 +151,28 @@ export function Timeline() {
         case "B":
           if (e.metaKey || e.ctrlKey) {
             e.preventDefault();
-            if (selectedClipId) {
-              executeAction({ type: 'cut', clipId: selectedClipId, time: currentTime });
+            for (const clipId of selectedClipIds) {
+              executeAction({ type: 'cut', clipId, time: currentTime });
             }
           }
           break;
         case "Delete":
         case "Backspace":
-          if (selectedClipId && !e.metaKey && !e.ctrlKey) {
-            executeAction({ type: 'deleteClip', clipId: selectedClipId });
+          if (selectedClipIds.length > 0 && !e.metaKey && !e.ctrlKey) {
+            withUndo("Delete clips", () => {
+              for (const clipId of [...selectedClipIds]) {
+                removeClip(clipId);
+              }
+            });
+          }
+          break;
+        case "l":
+        case "L":
+          if (e.metaKey || e.ctrlKey) {
+            e.preventDefault();
+            if (selectedClipIds.length > 0) {
+              withUndo("Toggle link", () => toggleLinkForSelection());
+            }
           }
           break;
         case "=":
@@ -176,15 +194,15 @@ export function Timeline() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    selectedClipId,
+    selectedClipIds,
     currentTime,
     pixelsPerSecond,
     removeClip,
+    toggleLinkForSelection,
     setActiveTool,
     setTimelineZoom,
   ]);
 
-  // ── Auto-follow playhead ──
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   useEffect(() => {
     if (!isPlaying || !scrollContainerRef.current) return;
@@ -194,19 +212,16 @@ export function Timeline() {
     const viewLeft = container.scrollLeft;
     const viewRight = viewLeft + container.clientWidth;
 
-    // If playhead goes offscreen to the right, scroll to follow
     if (playheadPx > viewRight - 60) {
       container.scrollLeft = playheadPx - container.clientWidth * 0.3;
     }
   }, [currentTime, pixelsPerSecond, isPlaying]);
 
-  // ── Empty state ──
   const hasClips = useMemo(
     () => tracks.some((t) => t.clips.length > 0),
     [tracks]
   );
 
-  // ── Drag & Drop onto timeline ──
   const [isTimelineDragOver, setIsTimelineDragOver] = useState(false);
 
   const handleTimelineDragOver = useCallback((e: React.DragEvent) => {
@@ -231,7 +246,6 @@ export function Timeline() {
       const videoFile = files.find((f) => isVideoFile(f));
       if (!videoFile) return;
 
-      // Calculate drop position in timeline seconds
       const scrollContainer = scrollContainerRef.current;
       const containerRect = scrollContainer?.getBoundingClientRect();
       let dropTime = 0;
@@ -245,7 +259,6 @@ export function Timeline() {
         const mediaFile = await store.addMediaFile(videoFile);
         store.addClipFromMedia(mediaFile, undefined, dropTime);
 
-        // Update composition dimensions if available
         if (mediaFile.width && mediaFile.height) {
           useEditorStore.setState((state) => ({
             project: {
@@ -254,13 +267,11 @@ export function Timeline() {
                 ...state.project.composition,
                 width: mediaFile.width!,
                 height: mediaFile.height!,
-                duration: Math.max(state.project.composition.duration, mediaFile.duration),
               },
             },
           }));
         }
 
-        // Load the source into the engine for preview
         const engine = getVideoEngine();
         await engine.loadSource(mediaFile.previewUrl);
         engine.resizeCanvas();
@@ -280,41 +291,45 @@ export function Timeline() {
       className="flex flex-col bg-neutral-950 border-t border-neutral-700 select-none"
       style={{ height: panelHeight }}
     >
-      {/* ─── Resize Handle ─── */}
       <div
         className="h-1 cursor-row-resize bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors shrink-0"
         onMouseDown={handleResizeStart}
       />
 
-      {/* ─── Toolbar ─── */}
       <TimelineToolbar onZoomToFit={handleZoomToFit} />
 
-      {/* ─── Timeline Body ─── */}
       <div className="flex flex-1 min-h-0 overflow-hidden" onWheel={handleWheel}>
-        {/* ── Track Headers (fixed left) ── */}
         <div
           className="flex flex-col bg-neutral-900 border-r border-neutral-800 shrink-0 overflow-hidden"
           style={{ width: TRACK_HEADER_WIDTH }}
         >
-          {/* Ruler spacer */}
           <div
             className="shrink-0 border-b border-neutral-700 bg-neutral-900 flex items-end px-2 pb-0.5"
             style={{ height: RULER_HEIGHT }}
           >
             <span className="text-[9px] text-neutral-600 font-mono">
-              {tracks.length} tracks
+              {videoTracks.length > 0 && `V${videoTracks.length}`}
+              {videoTracks.length > 0 && audioTracks.length > 0 && ' '}
+              {audioTracks.length > 0 && `A${audioTracks.length}`}
             </span>
           </div>
 
-          {/* Track headers */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden">
-            {tracks.map((track) => (
+            {videoTracks.map((track) => (
+              <TrackHeader key={track.id} track={track} />
+            ))}
+            {hasBothTypes && (
+              <div
+                className="bg-neutral-700/60 shrink-0"
+                style={{ height: TRACK_DIVIDER_HEIGHT }}
+              />
+            )}
+            {audioTracks.map((track) => (
               <TrackHeader key={track.id} track={track} />
             ))}
           </div>
         </div>
 
-        {/* ── Scrollable Timeline Content ── */}
         <div
           ref={scrollContainerRef}
           className="flex-1 overflow-x-auto overflow-y-auto"
@@ -324,7 +339,6 @@ export function Timeline() {
           onDrop={handleTimelineDrop}
         >
           <div className="relative" style={{ width: totalWidth, minWidth: "100%" }}>
-            {/* Time Ruler (sticky top) */}
             <div className="sticky top-0 z-20">
               <TimeRuler
                 pixelsPerSecond={pixelsPerSecond}
@@ -335,19 +349,34 @@ export function Timeline() {
               />
             </div>
 
-            {/* Tracks area */}
             <div className="relative">
-              {tracks.map((track, index) => (
+              {videoTracks.map((track, index) => (
                 <TrackLane
                   key={track.id}
                   track={track}
                   pixelsPerSecond={pixelsPerSecond}
                   totalWidth={totalWidth}
                   index={index}
+                  allTrackIds={allTrackIds}
+                />
+              ))}
+              {hasBothTypes && (
+                <div
+                  className="bg-neutral-700/60"
+                  style={{ height: TRACK_DIVIDER_HEIGHT, width: totalWidth, minWidth: "100%" }}
+                />
+              )}
+              {audioTracks.map((track, index) => (
+                <TrackLane
+                  key={track.id}
+                  track={track}
+                  pixelsPerSecond={pixelsPerSecond}
+                  totalWidth={totalWidth}
+                  index={videoTracks.length + index}
+                  allTrackIds={allTrackIds}
                 />
               ))}
 
-              {/* Drop overlay */}
               {isTimelineDragOver && (
                 <div className="absolute inset-0 bg-blue-500/10 border-2 border-dashed border-blue-400/50 flex items-center justify-center z-30 rounded pointer-events-none">
                   <span className="text-blue-300 text-xs font-medium bg-neutral-900/80 px-3 py-1.5 rounded">
@@ -356,7 +385,6 @@ export function Timeline() {
                 </div>
               )}
 
-              {/* Empty state */}
               {!hasClips && !isTimelineDragOver && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                   <p className="text-neutral-600 text-xs">
@@ -366,7 +394,6 @@ export function Timeline() {
               )}
             </div>
 
-            {/* Playhead (spans ruler + tracks) */}
             <div className="absolute top-0 left-0 right-0 pointer-events-none" style={{ height: RULER_HEIGHT + tracksHeight }}>
               <Playhead
                 pixelsPerSecond={pixelsPerSecond}

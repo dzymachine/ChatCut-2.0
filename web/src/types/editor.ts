@@ -65,6 +65,9 @@ export interface Track {
   muted: boolean;
   locked: boolean;
   visible: boolean;
+  volume: number;   // 0–1 (track-level gain)
+  pan: number;       // -1 (full left) to 1 (full right)
+  solo: boolean;
 }
 
 export interface Clip {
@@ -80,6 +83,10 @@ export interface Clip {
 
   // Where it sits on the timeline
   timelineStart: number; // seconds from the start of the composition
+
+  // Linked clip group — clips sharing the same linkId move/select/edit as one.
+  // null means the clip is independent (unlinked).
+  linkId: string | null;
 
   // Visual transforms (zoom, position, rotation, opacity, filters)
   // Legacy field — kept for backward compat with Canvas 2D preview engine.
@@ -219,7 +226,6 @@ export type EditAction =
   | PlaybackRateAction
   | CutAction
   | TrimAction
-  | MoveAction
   | DeleteClipAction
   | ApplyEffectAction
   | RemoveEffectAction
@@ -291,13 +297,6 @@ export interface DeleteClipAction {
   clipId: string;
 }
 
-export interface MoveAction {
-  type: 'move';
-  clipId: string;
-  newTimelineStart: number;
-  newTrackId?: string;
-}
-
 // ─── Commands (for undo/redo) ───────────────────────────────────────────────
 
 export interface Command {
@@ -322,23 +321,24 @@ export type EditorPanel = 'chat' | 'properties' | 'media';
 
 export interface UIState {
   activePanel: EditorPanel;
-  selectedClipId: string | null;
-  /** Ordered list of selected clip ids for multi-selection. Primary selection is last. */
+  /** Ordered list of selected clip IDs. First element is the primary (most recently clicked). */
   selectedClipIds: string[];
   selectedTrackId: string | null;
   isChatOpen: boolean;
   isDragging: boolean;
-  zoomLevel: number; // timeline zoom (1.0 = default)
+  zoomLevel: number;
+  /** When true, clicking a linked clip selects/moves/edits all clips in its link group. */
+  linkedSelectionEnabled: boolean;
 }
 
 export const DEFAULT_UI_STATE: UIState = {
   activePanel: 'chat',
-  selectedClipId: null,
   selectedClipIds: [],
   selectedTrackId: null,
   isChatOpen: true,
   isDragging: false,
   zoomLevel: 1.0,
+  linkedSelectionEnabled: true,
 };
 
 // ─── Timeline State ─────────────────────────────────────────────────────────
@@ -369,9 +369,9 @@ export const DEFAULT_TIMELINE_STATE: TimelineState = {
   snapEnabled: true,
   snapThresholdPx: 8,
   activeTool: 'select',
-  panelHeight: 250,
-  panelMinHeight: 120,
-  panelMaxHeightRatio: 0.55,
+  panelHeight: 380,
+  panelMinHeight: 150,
+  panelMaxHeightRatio: 0.60,
 };
 
 /** Track height constants (in pixels). */

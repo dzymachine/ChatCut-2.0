@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { useEditorStore } from "@/lib/store/editor-store";
+import { useEditorStore, withUndo } from "@/lib/store/editor-store";
 import { executeAction } from "@/lib/commands/command-handler";
 import type { TimelineTool } from "@/types/editor";
 import {
@@ -22,12 +22,16 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
   const snapEnabled = useEditorStore((s) => s.timeline.snapEnabled);
   const setSnapEnabled = useEditorStore((s) => s.setSnapEnabled);
+  const linkedSelectionEnabled = useEditorStore((s) => s.ui.linkedSelectionEnabled);
+  const setLinkedSelectionEnabled = useEditorStore((s) => s.setLinkedSelectionEnabled);
   const pixelsPerSecond = useEditorStore((s) => s.timeline.pixelsPerSecond);
   const setTimelineZoom = useEditorStore((s) => s.setTimelineZoom);
-  const selectedClipId = useEditorStore((s) => s.ui.selectedClipId);
+  const selectedClipIds = useEditorStore((s) => s.ui.selectedClipIds);
   const removeClip = useEditorStore((s) => s.removeClip);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const addTrack = useEditorStore((s) => s.addTrack);
+
+  const hasSelection = selectedClipIds.length > 0;
 
   const handleZoomIn = useCallback(() => {
     setTimelineZoom(pixelsPerSecond * 1.3);
@@ -38,16 +42,20 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
   }, [pixelsPerSecond, setTimelineZoom]);
 
   const handleSplit = useCallback(() => {
-    if (selectedClipId) {
-      executeAction({ type: 'cut', clipId: selectedClipId, time: currentTime });
+    for (const clipId of selectedClipIds) {
+      executeAction({ type: 'cut', clipId, time: currentTime });
     }
-  }, [selectedClipId, currentTime]);
+  }, [selectedClipIds, currentTime]);
 
   const handleDelete = useCallback(() => {
-    if (selectedClipId) {
-      executeAction({ type: 'deleteClip', clipId: selectedClipId });
+    if (selectedClipIds.length > 0) {
+      withUndo("Delete clips", () => {
+        for (const clipId of [...selectedClipIds]) {
+          removeClip(clipId);
+        }
+      });
     }
-  }, [selectedClipId]);
+  }, [selectedClipIds, removeClip]);
 
   const tools: Array<{ id: TimelineTool; label: string; icon: React.ReactNode; shortcut: string }> = [
     {
@@ -124,6 +132,29 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
         </TooltipContent>
       </Tooltip>
 
+      {/* Linked Selection Toggle */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => setLinkedSelectionEnabled(!linkedSelectionEnabled)}
+            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
+              linkedSelectionEnabled
+                ? "bg-blue-500/20 text-blue-400"
+                : "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800"
+            }`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
+            </svg>
+            <span className="text-[10px] font-medium">Linked</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>Linked Selection ({linkedSelectionEnabled ? "On" : "Off"})</p>
+        </TooltipContent>
+      </Tooltip>
+
       {/* Divider */}
       <div className="w-px h-4 bg-neutral-700 mx-1" />
 
@@ -132,7 +163,7 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
         <TooltipTrigger asChild>
           <button
             onClick={handleSplit}
-            disabled={!selectedClipId}
+            disabled={!hasSelection}
             className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -149,7 +180,7 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
         <TooltipTrigger asChild>
           <button
             onClick={handleDelete}
-            disabled={!selectedClipId}
+            disabled={!hasSelection}
             className="p-1.5 rounded text-neutral-500 hover:text-red-400 hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -165,20 +196,39 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Add Track */}
+      {/* Add Video Track */}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
             onClick={() => addTrack("video")}
-            className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
+            className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors flex items-center gap-1"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 5v14M5 12h14" />
             </svg>
+            <span className="text-[10px] font-medium text-blue-400">V</span>
           </button>
         </TooltipTrigger>
         <TooltipContent side="top">
-          <p>Add Track</p>
+          <p>Add Video Track</p>
+        </TooltipContent>
+      </Tooltip>
+
+      {/* Add Audio Track */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => addTrack("audio")}
+            className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors flex items-center gap-1"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            <span className="text-[10px] font-medium text-green-400">A</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>Add Audio Track</p>
         </TooltipContent>
       </Tooltip>
 

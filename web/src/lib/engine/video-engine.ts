@@ -4,40 +4,162 @@
  * The rendering core of the editor. Manages a <video> element and draws each
  * frame to a <canvas> with transforms applied.
  *
- * CRITICAL DESIGN DECISIONS:
- *  1. This class does NOT use React. It reads from the Zustand store directly
- *     via getState() so that React re-renders never cause frame drops.
- *  2. The render loop runs at display refresh rate (requestAnimationFrame).
- *  3. The engine is responsible for syncing playback state back to the store
- *     (current time updates, duration, play/pause state).
- *  4. All visual transforms (zoom, position, rotation, opacity, filters) are
- *     applied during rendering — the source video is never modified.
+ * ──── LAYERED ARCHITECTURE ────
+ *
+ * The editor is organized into independent layers to prevent changes in one
+ * area from breaking another:
+ *
+ *   Layer 1 — TYPES (editor.ts)
+ *     Pure data shapes. No logic, no side effects.
+ *
+ *   Layer 2 — STORE (editor-store.ts)
+ *     Single source of truth for all state. Divided into independent slices:
+ *       • Playback slice:  isPlaying, currentTime, volume, etc.
+ *       • Timeline slice:  zoom, snap, active tool
+ *       • Project slice:   tracks, clips, composition, linking
+ *       • UI slice:        selection, panels
+ *     Each slice's actions only modify their own slice, except clearly
+ *     documented cross-slice interactions (e.g. removeClip resets playback
+ *     when the timeline becomes empty).
+ *
+ *   Layer 3 — ENGINE (this file)
+ *     Reads from the store via getState(). Writes ONLY to the playback slice
+ *     (currentTime, isPlaying). Never modifies clips, tracks, or UI state.
+ *     The engine is a CONSUMER of clip/timeline state and a PRODUCER of
+ *     playback timing only.
+ *
+ *   Layer 4 — HOOKS (useVideoEngine.ts)
+ *     React glue. Manages engine lifecycle, auto-reloads sources after
+ *     HMR, and exposes stable callbacks for components.
+ *
+ *   Layer 5 — COMPONENTS (Timeline, VideoPreview, TransportControls)
+ *     Pure UI. Subscribe to store slices via selectors. Never touch the
+ *     engine directly — always go through the hook.
+ *
+ * KEY RULES:
+ *  1. This class does NOT use React. Reads from Zustand via getState().
+ *  2. The render loop runs at display refresh rate (rAF).
+ *  3. Playback state (isPlaying) is decoupled from video element state:
+ *     the timeline can be "playing" even if the video element is paused
+ *     (gap playback via wall-clock).
+ *  4. The singleton survives HMR via globalThis storage.
+ *  5. play() is non-fatal: if the video element can't play, wall-clock
+ *     fallback keeps the playhead moving.
  */
 
 import { useEditorStore, type EditorStore } from '@/lib/store/editor-store';
-import type { Transform, FilterState, Clip } from '@/types/editor';
+import type { Transform, FilterState, Clip, Track } from '@/types/editor';
+
+/**
+ * Manages a pool of <video> elements — one per concurrently-visible source file.
+ * Video elements are muted; audio is mixed separately via the store's playback state.
+ */
+class VideoElementPool {
+  private elements = new Map<string, HTMLVideoElement>();
+  private loadedSources = new Map<string, string>();
+
+  getOrCreate(sourceFileId: string, url: string): HTMLVideoElement {
+    const existing = this.elements.get(sourceFileId);
+    if (existing) {
+      if (this.loadedSources.get(sourceFileId) !== url) {
+        existing.src = url;
+        this.loadedSources.set(sourceFileId, url);
+      }
+      return existing;
+    }
+
+    const el = document.createElement('video');
+    el.playsInline = true;
+    el.preload = 'auto';
+    el.muted = true;
+    el.style.position = 'fixed';
+    el.style.top = '-9999px';
+    el.style.left = '-9999px';
+    el.style.width = '1px';
+    el.style.height = '1px';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+    document.body.appendChild(el);
+    el.src = url;
+
+    this.elements.set(sourceFileId, el);
+    this.loadedSources.set(sourceFileId, url);
+    return el;
+  }
+
+  get(sourceFileId: string): HTMLVideoElement | undefined {
+    return this.elements.get(sourceFileId);
+  }
+
+  has(sourceFileId: string): boolean {
+    return this.elements.has(sourceFileId);
+  }
+
+  pauseAll(): void {
+    for (const el of this.elements.values()) {
+      if (!el.paused) el.pause();
+    }
+  }
+
+  destroyAll(): void {
+    for (const el of this.elements.values()) {
+      el.pause();
+      el.src = '';
+      el.parentNode?.removeChild(el);
+    }
+    this.elements.clear();
+    this.loadedSources.clear();
+  }
+
+  /** Returns the first video element that has a loaded source (for backward compat). */
+  getAnyLoaded(): HTMLVideoElement | null {
+    for (const el of this.elements.values()) {
+      if (el.readyState >= 2) return el;
+    }
+    return null;
+  }
+
+  getAll(): Map<string, HTMLVideoElement> {
+    return this.elements;
+  }
+}
+
+/** Describes an active clip at a specific time with its associated track. */
+interface ActiveClip {
+  clip: Clip;
+  track: Track;
+  videoElement: HTMLVideoElement | null;
+}
 
 export class VideoEngine {
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
-  private videoElement: HTMLVideoElement | null = null;
   private animationFrameId: number | null = null;
   private isInitialized = false;
+
+  /** Pool of video elements — one per source file. */
+  private videoPool = new VideoElementPool();
+
+  /**
+   * Legacy single-video reference. Kept for backward compatibility with
+   * loadSource/unloadSource and the hook's auto-reload logic.
+   * Points to the "primary" video element (the first source loaded).
+   */
+  private videoElement: HTMLVideoElement | null = null;
 
   // Timing
   private lastFrameTime = 0;
   private frameCount = 0;
   private fps = 0;
 
-  // Brief suppression window after a programmatic seek to prevent the
-  // render loop from overwriting the store with a stale videoElement.currentTime.
-  // More reliable than checking videoElement.seeking (stuck in WKWebView).
+  // Brief suppression window after a programmatic seek
   private timeSyncSuppressedUntil = 0;
 
-  // Wall-clock time tracking for advancing playhead during gaps (no video playing)
+  // Wall-clock time tracking for advancing playhead during gaps
   private playStartWallTime: number | null = null;
 
-  // Store reference for direct reads
+  // Store reference for direct reads — refreshed via refreshStoreRef() to
+  // stay current after HMR re-evaluates the store module.
   private getState: () => EditorStore;
 
   // Animation state for animated transforms
@@ -47,11 +169,24 @@ export class VideoEngine {
     this.getState = useEditorStore.getState;
   }
 
+  /**
+   * Update the engine's store accessor to point to the current Zustand store.
+   * Called by the useVideoEngine hook on every mount to ensure the engine
+   * doesn't hold a stale reference after HMR re-evaluates the store module.
+   */
+  refreshStoreRef(accessor: () => EditorStore): void {
+    this.getState = accessor;
+  }
+
   // ─── Lifecycle ──────────────────────────────────────────────────────────
 
   /**
    * Initialize the engine with a canvas element.
-   * Creates a hidden <video> element for media playback.
+   *
+   * IDEMPOTENT: Safe to call multiple times (e.g. after HMR). If the engine
+   * is already initialized, only the canvas reference is updated — the video
+   * element and its loaded source are preserved. This prevents the "play
+   * breaks after code edit" problem.
    *
    * The video element is attached to the DOM (visually hidden) because
    * macOS WKWebView (Tauri) does not fire timeupdate events or advance
@@ -61,24 +196,12 @@ export class VideoEngine {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false })!;
 
-    // Create a hidden-but-attached video element
-    this.videoElement = document.createElement('video');
-    this.videoElement.playsInline = true;
-    this.videoElement.preload = 'auto';
-    this.videoElement.style.position = 'fixed';
-    this.videoElement.style.top = '-9999px';
-    this.videoElement.style.left = '-9999px';
-    this.videoElement.style.width = '1px';
-    this.videoElement.style.height = '1px';
-    this.videoElement.style.opacity = '0';
-    this.videoElement.style.pointerEvents = 'none';
-    document.body.appendChild(this.videoElement);
-
-    // Sync video events back to the store
-    this.videoElement.addEventListener('timeupdate', this.onTimeUpdate);
-    this.videoElement.addEventListener('ended', this.onEnded);
-    this.videoElement.addEventListener('play', () => this.getState().setPlaying(true));
-    this.videoElement.addEventListener('pause', () => this.getState().setPlaying(false));
+    // If already initialized (e.g. after HMR re-mount), keep the existing
+    // video pool and its loaded sources — just restart the render loop.
+    if (this.isInitialized) {
+      this.startRenderLoop();
+      return;
+    }
 
     this.isInitialized = true;
     this.startRenderLoop();
@@ -89,19 +212,8 @@ export class VideoEngine {
    */
   destroy(): void {
     this.stopRenderLoop();
-
-    if (this.videoElement) {
-      this.videoElement.removeEventListener('timeupdate', this.onTimeUpdate);
-      this.videoElement.removeEventListener('ended', this.onEnded);
-      this.videoElement.pause();
-      this.videoElement.src = '';
-      // Remove from DOM
-      if (this.videoElement.parentNode) {
-        this.videoElement.parentNode.removeChild(this.videoElement);
-      }
-      this.videoElement = null;
-    }
-
+    this.videoPool.destroyAll();
+    this.videoElement = null;
     this.canvas = null;
     this.ctx = null;
     this.isInitialized = false;
@@ -115,47 +227,77 @@ export class VideoEngine {
    * are removed so the engine is fully idle.
    */
   unloadSource(): void {
-    if (!this.videoElement) return;
+    this.videoPool.destroyAll();
+    this.videoElement = null;
 
-    this.videoElement.pause();
-    this.videoElement.removeAttribute('src');
-    this.videoElement.load(); // resets the media element
-
-    // Reset playback state in the store
     const state = this.getState();
     state.setPlaying(false);
     state.setCurrentTime(0);
 
-    // Immediately redraw the placeholder
     if (this.canvas && this.ctx) {
       this.drawPlaceholder();
     }
   }
 
   /**
-   * Load a media source into the video element.
+   * Load a media source. Creates a video element in the pool for this source.
+   * The first loaded source becomes the "primary" video element for backward compat.
+   *
+   * After loading, explicitly seeks to time 0 and triggers a canvas redraw so
+   * the user immediately sees the first frame of the video.
    */
-  loadSource(blobUrl: string): Promise<void> {
+  loadSource(blobUrl: string, sourceFileId?: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      if (!this.videoElement) {
+      if (!this.isInitialized) {
         reject(new Error('Engine not initialized'));
         return;
       }
 
-      const video = this.videoElement;
+      let fileId = sourceFileId;
+      if (!fileId) {
+        const state = this.getState();
+        for (const [id, mf] of state.mediaFiles) {
+          if (mf.previewUrl === blobUrl) {
+            fileId = id;
+            break;
+          }
+        }
+        if (!fileId) fileId = `source_${Date.now()}`;
+      }
 
-      // Clean up any previous source
-      video.pause();
-      video.removeAttribute('src');
-      video.load();
+      const video = this.videoPool.getOrCreate(fileId, blobUrl);
+
+      if (!this.videoElement) {
+        this.videoElement = video;
+      }
+
+      const finishLoad = () => {
+        this.resizeCanvas();
+        video.currentTime = 0;
+        this.renderFrame();
+      };
+
+      if (video.readyState >= 2) {
+        finishLoad();
+        resolve();
+        return;
+      }
+
+      const LOAD_TIMEOUT_MS = 15000;
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Video loading timed out'));
+      }, LOAD_TIMEOUT_MS);
 
       const onLoaded = () => {
+        clearTimeout(timer);
         cleanup();
-        this.resizeCanvas();
+        finishLoad();
         resolve();
       };
 
       const onError = () => {
+        clearTimeout(timer);
         cleanup();
         const mediaError = video.error;
         const code = mediaError?.code;
@@ -175,7 +317,6 @@ export class VideoEngine {
 
       video.addEventListener('loadeddata', onLoaded);
       video.addEventListener('error', onError);
-      video.src = blobUrl;
     });
   }
 
@@ -184,12 +325,11 @@ export class VideoEngine {
    * while fitting within the container.
    */
   resizeCanvas(): void {
-    if (!this.canvas || !this.videoElement) return;
+    if (!this.canvas) return;
 
     const state = this.getState();
     const { width, height } = state.project.composition;
 
-    // Set the canvas internal resolution to match composition
     this.canvas.width = width;
     this.canvas.height = height;
   }
@@ -204,76 +344,125 @@ export class VideoEngine {
     return clip.sourceStart + (timelineTime - clip.timelineStart);
   }
 
-  play(): void {
-    if (!this.videoElement) return;
-    // Premiere Pro behavior: play is a no-op when the timeline is empty.
+  /**
+   * Finds all active video clips at the given timeline time, ordered from
+   * bottom layer (V1, drawn first) to top layer (V3, drawn last / foreground).
+   *
+   * The track array is ordered [V3, V2, V1, A1, A2, A3] in the store,
+   * so we reverse the video tracks for compositing order.
+   */
+  private getActiveVideoClips(timelineTime: number): ActiveClip[] {
     const state = this.getState();
-    const hasClips = state.project.tracks.some(
-      (t) => t.clips.length > 0
+    const result: ActiveClip[] = [];
+
+    // Collect all video tracks that have an active clip at this time
+    const videoTracks = state.project.tracks.filter(
+      (t) => t.type === 'video' && t.visible && !t.muted
     );
-    if (!hasClips) return;
 
-    const timelineTime = state.playback.currentTime;
-    const clip = state.getClipAtTime(timelineTime);
-
-    // Update playing state
-    state.setPlaying(true);
-    this.playStartWallTime = performance.now();
-
-    // Only start video playback if we're within a valid clip range.
-    // If in a gap, the render loop will advance time based on wall-clock.
-    if (clip && this.videoElement) {
-      const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
-      const isInClipRange = timelineTime >= clip.timelineStart && timelineTime < clipEnd;
-
-      if (isInClipRange) {
-        const sourceTime = this.mapTimelineToSourceTime(clip, timelineTime);
-        const videoDur = this.videoElement.duration || 0;
-        
-        if (videoDur > 0) {
-          this.videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
-          this.timeSyncSuppressedUntil = performance.now() + 150;
+    // Reverse so V1 (last in array) is drawn first (background)
+    for (let i = videoTracks.length - 1; i >= 0; i--) {
+      const track = videoTracks[i];
+      for (const clip of track.clips) {
+        const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+        if (timelineTime >= clip.timelineStart && timelineTime < clipEnd) {
+          const mediaFile = state.mediaFiles.get(clip.sourceFileId);
+          let videoEl: HTMLVideoElement | null = null;
+          if (mediaFile) {
+            videoEl = this.videoPool.getOrCreate(clip.sourceFileId, mediaFile.previewUrl);
+          }
+          result.push({ clip, track, videoElement: videoEl });
+          break; // One clip per track at most
         }
-        this.videoElement.play().catch(console.error);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Ensures video pool elements exist for all sources in the project.
+   * Called lazily when needed.
+   */
+  private ensurePoolForAllSources(): void {
+    const state = this.getState();
+    for (const track of state.project.tracks) {
+      if (track.type !== 'video') continue;
+      for (const clip of track.clips) {
+        const mediaFile = state.mediaFiles.get(clip.sourceFileId);
+        if (mediaFile && !this.videoPool.has(clip.sourceFileId)) {
+          const el = this.videoPool.getOrCreate(clip.sourceFileId, mediaFile.previewUrl);
+          if (!this.videoElement) {
+            this.videoElement = el;
+          }
+        }
       }
     }
   }
 
+  play(): void {
+    const state = this.getState();
+    const hasClips = state.project.tracks.some((t) => t.clips.length > 0);
+    if (!hasClips) return;
+
+    this.ensurePoolForAllSources();
+
+    const timelineTime = state.playback.currentTime;
+
+    // Set playback state FIRST — this is the source of truth.
+    state.setPlaying(true);
+    this.playStartWallTime = performance.now();
+
+    // Start playback on all active video clips
+    const activeClips = this.getActiveVideoClips(timelineTime);
+    for (const { clip, videoElement } of activeClips) {
+      if (!videoElement) continue;
+      const sourceTime = this.mapTimelineToSourceTime(clip, timelineTime);
+      const videoDur = videoElement.duration || 0;
+      if (videoDur > 0) {
+        videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
+      }
+      videoElement.play().catch((err) => {
+        console.warn('[VideoEngine] play() rejected (wall-clock fallback active):', err.message);
+      });
+    }
+    this.timeSyncSuppressedUntil = performance.now() + 150;
+  }
+
   pause(): void {
-    if (!this.videoElement) return;
-    this.videoElement.pause();
+    this.videoPool.pauseAll();
     this.playStartWallTime = null;
+    this.getState().setPlaying(false);
   }
 
   togglePlayback(): void {
-    if (!this.videoElement) return;
-    if (this.videoElement.paused) {
-      this.play();
-    } else {
+    const state = this.getState();
+    if (state.playback.isPlaying) {
       this.pause();
+    } else {
+      this.play();
     }
   }
 
   seek(time: number): void {
-    if (!this.videoElement) return;
     const safeTime = Math.max(0, time);
-
-    // Update the store first — the store is the source of truth for
-    // the playhead position and is NOT clamped to the video's duration.
     const state = this.getState();
     state.setCurrentTime(safeTime);
 
-    // Map the timeline position to source media time and seek the video element.
-    const clip = state.getClipAtTime(safeTime);
-    if (!clip) return;
+    this.ensurePoolForAllSources();
 
-    const sourceTime = this.mapTimelineToSourceTime(clip, safeTime);
-    const videoDur = this.videoElement.duration || 0;
-    if (videoDur > 0) {
-      this.videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
-      // Suppress render-loop time sync briefly
-      this.timeSyncSuppressedUntil = performance.now() + 150;
+    const activeClips = this.getActiveVideoClips(safeTime);
+    for (const { clip, videoElement } of activeClips) {
+      if (!videoElement) continue;
+      const sourceTime = this.mapTimelineToSourceTime(clip, safeTime);
+      const videoDur = videoElement.duration || 0;
+      if (videoDur > 0) {
+        videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
+      }
     }
+    this.timeSyncSuppressedUntil = performance.now() + 150;
+
+    this.renderFrame();
   }
 
   setVolume(volume: number): void {
@@ -362,60 +551,82 @@ export class VideoEngine {
       this.lastFrameTime = now;
     }
 
-    // Sync playback time based on either video element or wall-clock.
-    // - If video is playing: sync from video.currentTime (source time → timeline time)
-    // - If in a gap (playing but no video): advance based on elapsed wall time
-    // - Detect gap→clip transition and start video automatically
     const state = this.getState();
-    const timelineTime = state.playback.currentTime;
-    const clip = state.getClipAtTime(timelineTime);
 
     if (state.playback.isPlaying && now > this.timeSyncSuppressedUntil) {
-      if (
-        this.videoElement &&
-        !this.videoElement.paused &&
-        this.videoElement.readyState >= 2
-      ) {
-        // Video is actively playing — map source time back to timeline time
-        if (clip) {
-          const timelineTime = clip.timelineStart + (this.videoElement.currentTime - clip.sourceStart);
-          state.setCurrentTime(timelineTime);
+      const timelineTime = state.playback.currentTime;
+      const activeClips = this.getActiveVideoClips(timelineTime);
+
+      // Find the "driver" — the topmost actively-playing video element
+      // whose currentTime we use to sync the timeline.
+      let driverClip: ActiveClip | null = null;
+      for (const ac of activeClips) {
+        if (ac.videoElement && !ac.videoElement.paused && ac.videoElement.readyState >= 2) {
+          driverClip = ac;
+          break;
+        }
+      }
+
+      if (driverClip && driverClip.videoElement) {
+        const { clip, videoElement } = driverClip;
+        const mappedTime = clip.timelineStart + (videoElement.currentTime - clip.sourceStart);
+        const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+
+        if (videoElement.currentTime >= clip.sourceEnd || mappedTime >= clipEnd) {
+          // Clip boundary — pause all video elements and advance past the boundary
+          this.videoPool.pauseAll();
+          state.setCurrentTime(clipEnd);
           this.playStartWallTime = now;
+        } else {
+          state.setCurrentTime(mappedTime);
+          this.playStartWallTime = now;
+
+          // Sync all other active video elements to this same timeline position
+          for (const ac of activeClips) {
+            if (ac === driverClip || !ac.videoElement) continue;
+            if (ac.videoElement.paused && ac.videoElement.readyState >= 2) {
+              const srcTime = this.mapTimelineToSourceTime(ac.clip, mappedTime);
+              const dur = ac.videoElement.duration || 0;
+              if (dur > 0) {
+                ac.videoElement.currentTime = Math.min(Math.max(srcTime, 0), dur);
+              }
+              ac.videoElement.play().catch(() => {});
+            }
+          }
         }
       } else if (this.playStartWallTime !== null) {
-        // Video is paused or not ready, but timeline is playing (in a gap).
-        // Advance timeline based on wall-clock elapsed time.
-        const elapsedMs = now - this.playStartWallTime;
-        const elapsedSec = elapsedMs / 1000;
+        // Wall-clock fallback: no video is playing (gap or no clips)
+        const elapsedSec = (now - this.playStartWallTime) / 1000;
         const newTime = state.playback.currentTime + elapsedSec;
+
+        const compositionDuration = state.getDuration();
+        if (compositionDuration > 0 && newTime >= compositionDuration) {
+          state.setCurrentTime(compositionDuration);
+          this.pause();
+          return;
+        }
+
         state.setCurrentTime(newTime);
         this.playStartWallTime = now;
 
-        // Check if we've entered a clip during gap playback
-        const clipAtNewTime = state.getClipAtTime(newTime);
-        if (clipAtNewTime && this.videoElement) {
-          const clipEnd = clipAtNewTime.timelineStart + (clipAtNewTime.sourceEnd - clipAtNewTime.sourceStart);
-          const isNowInClip = newTime >= clipAtNewTime.timelineStart && newTime < clipEnd;
-          
-          if (isNowInClip) {
-            // Transition from gap into clip — start video at correct source time
-            const sourceTime = this.mapTimelineToSourceTime(clipAtNewTime, newTime);
-            const videoDur = this.videoElement.duration || 0;
-            
-            if (videoDur > 0) {
-              this.videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
+        // Check if we've entered any clip during gap playback
+        const newActiveClips = this.getActiveVideoClips(newTime);
+        for (const ac of newActiveClips) {
+          if (!ac.videoElement) continue;
+          if (ac.videoElement.paused || ac.videoElement.readyState < 2) {
+            const sourceTime = this.mapTimelineToSourceTime(ac.clip, newTime);
+            const dur = ac.videoElement.duration || 0;
+            if (dur > 0) {
+              ac.videoElement.currentTime = Math.min(Math.max(sourceTime, 0), dur);
               this.timeSyncSuppressedUntil = performance.now() + 150;
             }
-            this.videoElement.play().catch(console.error);
+            ac.videoElement.play().catch(() => {});
           }
         }
       }
     }
 
-    // Process animations
     this.processAnimations(now);
-
-    // Render the frame
     this.renderFrame();
   };
 
@@ -450,74 +661,76 @@ export class VideoEngine {
     }
   }
 
+  /**
+   * Renders all active video clips, composited bottom-to-top (V1 first, V3 last).
+   * Each clip is drawn with its own transform, opacity, and CSS filters.
+   */
   private renderFrame(): void {
-    if (!this.canvas || !this.ctx || !this.videoElement) return;
-    if (this.videoElement.readyState < 2) return;
+    if (!this.canvas || !this.ctx) return;
 
-    const { canvas, ctx, videoElement } = this;
-    const state = this.getState();
+    const { canvas, ctx } = this;
 
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    try {
+      const state = this.getState();
 
-    // Check if any clips exist in the project
-    const hasClips = state.project.tracks.some((t) => t.clips.length > 0);
-    if (!hasClips) {
-      this.drawPlaceholder();
-      return;
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const hasClips = state.project.tracks.some((t) => t.clips.length > 0);
+      if (!hasClips) {
+        this.drawPlaceholder();
+        return;
+      }
+
+      const activeClips = this.getActiveVideoClips(state.playback.currentTime);
+      if (activeClips.length === 0) return;
+
+      for (const { clip, videoElement } of activeClips) {
+        if (!videoElement || videoElement.readyState < 2) continue;
+        if (videoElement.videoWidth === 0 || videoElement.videoHeight === 0) continue;
+
+        const { transform } = clip;
+
+        ctx.save();
+        ctx.globalAlpha = transform.opacity;
+        ctx.filter = buildCSSFilter(transform.filters);
+
+        ctx.translate(
+          canvas.width / 2 + transform.positionX,
+          canvas.height / 2 + transform.positionY
+        );
+
+        if (transform.rotation !== 0) {
+          ctx.rotate((transform.rotation * Math.PI) / 180);
+        }
+
+        ctx.scale(transform.scale, transform.scale);
+
+        const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
+        const canvasAspect = canvas.width / canvas.height;
+
+        let drawWidth: number, drawHeight: number;
+        if (videoAspect > canvasAspect) {
+          drawWidth = canvas.width;
+          drawHeight = canvas.width / videoAspect;
+        } else {
+          drawHeight = canvas.height;
+          drawWidth = canvas.height * videoAspect;
+        }
+
+        ctx.drawImage(
+          videoElement,
+          -drawWidth / 2,
+          -drawHeight / 2,
+          drawWidth,
+          drawHeight
+        );
+
+        ctx.restore();
+      }
+    } catch (err) {
+      console.warn('[VideoEngine] renderFrame error:', err);
     }
-
-    // Get clip at current playhead time (null if in a gap)
-    const clip = state.getClipAtTime(state.playback.currentTime);
-    if (!clip) {
-      return;
-    }
-
-    const currentTime = state.playback.currentTime;
-    const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
-    if (currentTime < clip.timelineStart || currentTime >= clipEnd) {
-      return;
-    }
-
-    const { transform } = clip;
-
-    ctx.save();
-
-    ctx.globalAlpha = transform.opacity;
-    ctx.filter = buildCSSFilter(transform.filters);
-
-    ctx.translate(
-      canvas.width / 2 + transform.positionX,
-      canvas.height / 2 + transform.positionY
-    );
-
-    if (transform.rotation !== 0) {
-      ctx.rotate((transform.rotation * Math.PI) / 180);
-    }
-
-    ctx.scale(transform.scale, transform.scale);
-
-    const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
-    const canvasAspect = canvas.width / canvas.height;
-
-    let drawWidth: number, drawHeight: number;
-    if (videoAspect > canvasAspect) {
-      drawWidth = canvas.width;
-      drawHeight = canvas.width / videoAspect;
-    } else {
-      drawHeight = canvas.height;
-      drawWidth = canvas.height * videoAspect;
-    }
-
-    ctx.drawImage(
-      videoElement,
-      -drawWidth / 2,
-      -drawHeight / 2,
-      drawWidth,
-      drawHeight
-    );
-
-    ctx.restore();
   }
 
   private drawPlaceholder(): void {
@@ -536,26 +749,6 @@ export class VideoEngine {
 
   // ─── Event Handlers ───────────────────────────────────────────────────
 
-  private onTimeUpdate = (): void => {
-    // Time sync is handled in renderLoop at 60 fps for smooth playhead
-    // movement. This handler is intentionally a no-op.
-  };
-
-  private onEnded = (): void => {
-    const state = this.getState();
-    if (state.playback.loop) {
-      this.seek(0);
-      this.play();
-    } else {
-      state.setPlaying(false);
-      // Park the playhead at the composition end, not the raw source end.
-      const compositionDuration = state.getDuration();
-      if (compositionDuration > 0) {
-        state.setCurrentTime(compositionDuration);
-      }
-    }
-  };
-
   // ─── Public Getters ───────────────────────────────────────────────────
 
   getFPS(): number {
@@ -563,11 +756,15 @@ export class VideoEngine {
   }
 
   isReady(): boolean {
-    return this.isInitialized && this.videoElement !== null && this.videoElement.readyState >= 2;
+    return this.isInitialized;
+  }
+
+  hasSourceLoaded(): boolean {
+    return this.videoPool.getAnyLoaded() !== null;
   }
 
   getVideoElement(): HTMLVideoElement | null {
-    return this.videoElement;
+    return this.videoElement ?? this.videoPool.getAnyLoaded();
   }
 }
 
@@ -618,19 +815,31 @@ function applyEasing(t: number, easing: EasingFunction): number {
 
 // ─── Singleton ──────────────────────────────────────────────────────────────
 // The engine is a singleton. There is one canvas, one video, one render loop.
+//
+// IMPORTANT: We store the instance on globalThis instead of a module-level
+// variable so the engine SURVIVES Hot Module Replacement (HMR). When HMR
+// re-evaluates this module, a `let` would reset to null, orphaning the old
+// engine (still running its render loop + holding the loaded video source)
+// and creating a new uninitialized one — breaking playback every time code
+// is edited. globalThis persists across module re-evaluations.
 
-let engineInstance: VideoEngine | null = null;
+const ENGINE_KEY = '__chatcut_video_engine__' as const;
 
 export function getVideoEngine(): VideoEngine {
-  if (!engineInstance) {
-    engineInstance = new VideoEngine();
-  }
-  return engineInstance;
+  const existing = (globalThis as Record<string, unknown>)[ENGINE_KEY];
+  if (existing instanceof VideoEngine) return existing;
+
+  // Discard stale engine from previous HMR cycle / SSR that might be
+  // missing methods after code changes.
+  const engine = new VideoEngine();
+  (globalThis as Record<string, unknown>)[ENGINE_KEY] = engine;
+  return engine;
 }
 
 export function destroyVideoEngine(): void {
-  if (engineInstance) {
-    engineInstance.destroy();
-    engineInstance = null;
+  const engine = (globalThis as Record<string, unknown>)[ENGINE_KEY] as VideoEngine | undefined;
+  if (engine) {
+    engine.destroy();
+    delete (globalThis as Record<string, unknown>)[ENGINE_KEY];
   }
 }

@@ -44,7 +44,9 @@ export function effectsToTransform(effects: AppliedEffect[]): Transform {
         transform.filters.blur = effect.parameters.sigma ?? 0;
         break;
       case 'brightness':
-        transform.filters.brightness = effect.parameters.brightness ?? 1.0;
+        // Effect stores brightness as an offset (-1..+1 range, 0 = normal).
+        // CSS brightness is a multiplier (1.0 = normal). Add 1.0 to convert back.
+        transform.filters.brightness = (effect.parameters.brightness ?? 0) + 1.0;
         break;
       case 'contrast':
         transform.filters.contrast = effect.parameters.contrast ?? 1.0;

@@ -19,6 +19,9 @@ const TRACK_COLORS: Record<string, string> = {
 /**
  * Track header — shows the track label, type indicator, and
  * mute/lock/visibility toggles.
+ *
+ * Video tracks show: [Eye] [Lock] [M]
+ * Audio tracks show: [M] [S] [Lock]
  */
 export function TrackHeader({ track }: TrackHeaderProps) {
   const updateTrack = useCallback(
@@ -39,6 +42,10 @@ export function TrackHeader({ track }: TrackHeaderProps) {
   const toggleMuted = useCallback(() => updateTrack({ muted: !track.muted }), [track.muted, updateTrack]);
   const toggleLocked = useCallback(() => updateTrack({ locked: !track.locked }), [track.locked, updateTrack]);
   const toggleVisible = useCallback(() => updateTrack({ visible: !track.visible }), [track.visible, updateTrack]);
+  const toggleSolo = useCallback(() => updateTrack({ solo: !track.solo }), [track.solo, updateTrack]);
+
+  const isVideo = track.type === 'video';
+  const isAudio = track.type === 'audio';
 
   return (
     <div
@@ -53,9 +60,37 @@ export function TrackHeader({ track }: TrackHeaderProps) {
         {track.label}
       </span>
 
-      {/* Controls */}
+      {/* Controls — layout varies by track type */}
       <div className="flex items-center gap-0.5">
-        {/* Mute/Solo */}
+        {/* Video: Visibility (Eye) */}
+        {isVideo && (
+          <button
+            onClick={toggleVisible}
+            className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
+              !track.visible
+                ? "bg-neutral-700 text-neutral-500"
+                : "text-neutral-600 hover:text-neutral-400 hover:bg-neutral-800"
+            }`}
+            title={track.visible ? "Hide" : "Show"}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              {track.visible ? (
+                <>
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </>
+              ) : (
+                <>
+                  <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />
+                  <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </>
+              )}
+            </svg>
+          </button>
+        )}
+
+        {/* Mute */}
         <button
           onClick={toggleMuted}
           className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-colors ${
@@ -67,6 +102,21 @@ export function TrackHeader({ track }: TrackHeaderProps) {
         >
           M
         </button>
+
+        {/* Audio: Solo */}
+        {isAudio && (
+          <button
+            onClick={toggleSolo}
+            className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-colors ${
+              track.solo
+                ? "bg-yellow-500/20 text-yellow-400"
+                : "text-neutral-600 hover:text-neutral-400 hover:bg-neutral-800"
+            }`}
+            title={track.solo ? "Unsolo" : "Solo"}
+          >
+            S
+          </button>
+        )}
 
         {/* Lock */}
         <button
@@ -83,32 +133,6 @@ export function TrackHeader({ track }: TrackHeaderProps) {
               <path d="M5 11V7a7 7 0 0114 0v4M3 11h18v11H3V11z" />
             ) : (
               <path d="M7 11V7a5 5 0 0110 0M3 11h18v11H3V11z" />
-            )}
-          </svg>
-        </button>
-
-        {/* Visibility */}
-        <button
-          onClick={toggleVisible}
-          className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
-            !track.visible
-              ? "bg-neutral-700 text-neutral-500"
-              : "text-neutral-600 hover:text-neutral-400 hover:bg-neutral-800"
-          }`}
-          title={track.visible ? "Hide" : "Show"}
-        >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            {track.visible ? (
-              <>
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                <circle cx="12" cy="12" r="3" />
-              </>
-            ) : (
-              <>
-                <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />
-                <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
-                <line x1="1" y1="1" x2="23" y2="23" />
-              </>
             )}
           </svg>
         </button>

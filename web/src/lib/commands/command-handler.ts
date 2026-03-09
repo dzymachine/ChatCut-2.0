@@ -40,7 +40,7 @@ export function executeAction(action: EditAction): { success: boolean; message: 
   const clip = store.getActiveClip();
   const engine = getVideoEngine();
 
-  // Capture state before the action for undo (AI-driven actions only)
+  // Capture state before the action for undo
   const previousTracks = structuredClone(store.project.tracks);
   const previousPlayback = structuredClone(store.playback);
 
@@ -73,9 +73,6 @@ export function executeAction(action: EditAction): { success: boolean; message: 
       case 'trim':
         return handleTrim(action);
 
-      case 'move':
-        return handleMove(action);
-
       case 'deleteClip':
         return handleDeleteClip(action);
 
@@ -95,11 +92,12 @@ export function executeAction(action: EditAction): { success: boolean; message: 
         return { success: false, message: `Unknown action type: ${(action as EditAction).type}` };
     }
   } finally {
-    // Push undo entry for AI-initiated edits (UI drags will handle their own entries)
+    // Capture state after the action
     const afterStore = useEditorStore.getState();
     const afterTracks = structuredClone(afterStore.project.tracks);
     const afterPlayback = structuredClone(afterStore.playback);
 
+    // Only push undo if state actually changed
     if (JSON.stringify(previousTracks) !== JSON.stringify(afterTracks) ||
         JSON.stringify(previousPlayback) !== JSON.stringify(afterPlayback)) {
       store.pushUndo({
@@ -226,12 +224,6 @@ function handleCut(action: { type: 'cut'; clipId: string; time: number }): { suc
   return { success: true, message: `Split clip at ${action.time.toFixed(1)}s — created new clip "${clip2.id.slice(0, 6)}…"` };
 }
 
-function handleMove(action: { type: 'move'; clipId: string; newTimelineStart: number; newTrackId?: string }): { success: boolean; message: string } {
-  const store = useEditorStore.getState();
-  store.moveClip(action.clipId, action.newTimelineStart, action.newTrackId);
-  return { success: true, message: `Moved clip to ${action.newTimelineStart.toFixed(1)}s` };
-}
-
 function handleTrim(action: { type: 'trim'; clipId: string; start?: number; end?: number }): { success: boolean; message: string } {
   const store = useEditorStore.getState();
 
@@ -326,7 +318,6 @@ function describeAction(action: EditAction): string {
     case 'playbackRate': return `Speed to ${action.value}x`;
     case 'cut': return `Cut at ${action.time}s`;
     case 'trim': return `Trim clip`;
-    case 'move': return `Move clip`;
     case 'deleteClip': return `Delete clip`;
     case 'applyEffect': {
       const desc = getEffectDescriptor(action.effectId);
