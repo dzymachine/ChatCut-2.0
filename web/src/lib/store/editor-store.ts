@@ -35,6 +35,7 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import { getVideoEngine } from '@/lib/engine/video-engine';
+import { isTauri } from '@/lib/tauri/bridge';
 import {
   type Project,
   type Track,
@@ -246,6 +247,15 @@ function createStore() {
   },
 
   addMediaFile: async (file: File): Promise<MediaFile> => {
+    // desktop drop/file-picker yields a File object that also has a native
+    // `path` property; we prefer using the path handler so that we can
+    // access the real file via the Tauri FS plugin (avoids sandbox issues).
+    // This keeps most of the codebase working with `addMediaFile` and avoids
+    // duplicating the path logic in every drop handler.
+    if (isTauri() && (file as any).path) {
+      return get().addMediaFileFromPath((file as any).path, file.name || '');
+    }
+
     const blobUrl = URL.createObjectURL(file);
     const mediaFile: MediaFile = {
       id: uuid(),

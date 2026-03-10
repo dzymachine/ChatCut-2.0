@@ -23,10 +23,72 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
     }
   }, [isReady, onEngineReady]);
 
-  // ── Drag & Drop ──
+  // ── Tauri Drag & Drop Events ──
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let unlisteners: (() => void)[] = [];
+
+    const setupListeners = async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const { listen } = await import('@tauri-apps/api/event');
+      const window = getCurrentWindow();
+
+      const unlistenEnter = await listen('tauri://drag-drop-hover', () => {
+        setIsDragOver(true);
+      });
+      unlisteners.push(unlistenEnter);
+
+      const unlistenLeave = await listen('tauri://drag-drop-cancelled', () => {
+        setIsDragOver(false);
+      });
+      unlisteners.push(unlistenLeave);
+
+      const unlistenDrop = await listen('tauri://drag-drop', async (event: any) => {
+        console.log('[VideoPreview] Tauri drag-drop event:', event);
+        setIsDragOver(false);
+        
+        const paths = event.payload?.paths as string[];
+        console.log('[VideoPreview] Drop paths:', paths);
+        if (!paths || paths.length === 0) return;
+
+        // Find the first video file
+        const videoPath = paths.find((path) => {
+          const ext = path.toLowerCase().split('.').pop();
+          return ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'ogv', 'ogg', 'ts', 'mts'].includes(ext || '');
+        });
+
+        console.log('[VideoPreview] Found video path:', videoPath);
+        if (!videoPath) return;
+
+        setIsLoading(true);
+        try {
+          console.log('[VideoPreview] Loading video from path:', videoPath);
+          await loadVideoFromPath(videoPath);
+          showToast("success", "Video loaded successfully");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Failed to load video";
+          console.error("[VideoPreview] Tauri drop load error:", msg);
+          showToast("error", msg);
+        } finally {
+          setIsLoading(false);
+        }
+      });
+      unlisteners.push(unlistenDrop);
+    };
+
+    setupListeners();
+
+    return () => {
+      unlisteners.forEach(unlisten => unlisten());
+    };
+  }, [loadVideoFromPath]);
+
+  // ── Web Drag & Drop ──
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
     setIsDragOver(true);
   }, []);
 
@@ -42,21 +104,29 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       e.stopPropagation();
       setIsDragOver(false);
 
-      const files = Array.from(e.dataTransfer.files);
-      const videoFile = files.find((f) => isVideoFile(f));
-
-      if (videoFile) {
-        setIsLoading(true);
-        try {
-          await loadVideo(videoFile);
-          showToast("success", "Video loaded successfully");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Failed to load video";
-          console.error("[VideoPreview] Drop load error:", msg);
-          showToast("error", msg);
-        } finally {
-          setIsLoading(false);
+      let files = Array.from(e.dataTransfer.files);
+      if (files.length === 0 && e.dataTransfer.items) {
+        for (let i = 0; i < e.dataTransfer.items.length; i++) {
+          const item = e.dataTransfer.items[i];
+          if (item.kind === 'file') {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
         }
+      }
+      const videoFile = files.find((f) => isVideoFile(f));
+      if (!videoFile) return;
+
+      setIsLoading(true);
+      try {
+        await loadVideo(videoFile as File);
+        showToast("success", "Video loaded successfully");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to load video";
+        console.error("[VideoPreview] Drop load error:", msg);
+        showToast("error", msg);
+      } finally {
+        setIsLoading(false);
       }
     },
     [loadVideo]
