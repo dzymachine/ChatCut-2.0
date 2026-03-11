@@ -247,17 +247,19 @@ export function mapAIAction(raw: RawAIAction): EditAction | null {
       };
 
     case 'crop':
-    case 'set_crop':
-      return {
-        type: 'applyEffect',
-        effectId: 'crop',
-        parameters: {
-          width: Number(p.width ?? p.w ?? 1920),
-          height: Number(p.height ?? p.h ?? 1080),
-          x: Number(p.x ?? p.offset_x ?? 0),
-          y: Number(p.y ?? p.offset_y ?? 0),
-        },
+    case 'set_crop': {
+      const cropParams: Record<string, number> = {
+        width: Number(p.width ?? p.w ?? 1920),
+        height: Number(p.height ?? p.h ?? 1080),
       };
+      // Only include x/y when explicitly provided — omitting them lets the
+      // engine center the crop window automatically.
+      const explicitX = p.x ?? p.offset_x;
+      const explicitY = p.y ?? p.offset_y;
+      if (explicitX !== undefined && explicitX !== null) cropParams.x = Number(explicitX);
+      if (explicitY !== undefined && explicitY !== null) cropParams.y = Number(explicitY);
+      return { type: 'applyEffect', effectId: 'crop', parameters: cropParams };
+    }
 
     case 'fade_in':
     case 'add_fade_in':
@@ -274,7 +276,9 @@ export function mapAIAction(raw: RawAIAction): EditAction | null {
         type: 'applyEffect',
         effectId: 'fade_out',
         parameters: {
-          start: Number(p.start ?? p.at ?? 0),
+          // Do NOT default start to 0 — the command handler will compute
+          // it from the clip duration (end - fade_duration) when omitted.
+          ...(p.start != null || p.at != null ? { start: Number(p.start ?? p.at) } : {}),
           duration: Number(p.duration ?? p.value ?? 1.0),
         },
       };
