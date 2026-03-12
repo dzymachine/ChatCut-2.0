@@ -60,6 +60,46 @@ export function Timeline() {
   const contentDuration = Math.max(duration + Math.max(duration * 0.2, 5), 10);
   const totalWidth = contentDuration * pixelsPerSecond;
 
+  // Calculate overlap regions between tracks
+  // const overlapRegions = useMemo(() => {
+  //   const regions: Array<{ start: number; end: number; tracks: string[] }> = [];
+    
+  //   // For each pair of video tracks, find overlapping time ranges
+  //   for (let i = 0; i < videoTracks.length; i++) {
+  //     for (let j = i + 1; j < videoTracks.length; j++) {
+  //       const track1 = videoTracks[i];
+  //       const track2 = videoTracks[j];
+        
+  //       // Find all time ranges where both tracks have clips
+  //       const ranges1 = track1.clips.map(clip => ({
+  //         start: clip.timelineStart,
+  //         end: clip.timelineStart + (clip.sourceEnd - clip.sourceStart)
+  //       }));
+  //       const ranges2 = track2.clips.map(clip => ({
+  //         start: clip.timelineStart,
+  //         end: clip.timelineStart + (clip.sourceEnd - clip.sourceStart)
+  //       }));
+        
+  //       // Find intersections
+  //       for (const r1 of ranges1) {
+  //         for (const r2 of ranges2) {
+  //           const overlapStart = Math.max(r1.start, r2.start);
+  //           const overlapEnd = Math.min(r1.end, r2.end);
+  //           if (overlapStart < overlapEnd) {
+  //             regions.push({
+  //               start: overlapStart,
+  //               end: overlapEnd,
+  //               tracks: [track1.id, track2.id]
+  //             });
+  //           }
+  //         }
+  //       }
+  //     }
+  //   }
+    
+  //   return regions;
+  // }, [videoTracks]);
+
   const resizeState = useRef<{ startY: number; startHeight: number } | null>(null);
 
   const handleResizeStart = useCallback(
@@ -259,7 +299,30 @@ export function Timeline() {
         try {
           const fileName = videoPath.split(/[/\\]/).pop() || 'video';
           const mediaFile = await store.addMediaFileFromPath(videoPath, fileName);
-          store.addClipFromMedia(mediaFile, undefined, dropTime);
+          
+          // Find the first empty video track (preferring higher tracks for layering)
+          const videoTracks = store.project.tracks.filter(t => t.type === 'video');
+          let targetTrackId: string | undefined;
+          
+          // Check if any track has space at the drop time
+          for (let i = 0; i < videoTracks.length; i++) {
+            const track = videoTracks[i];
+            const hasOverlap = track.clips.some(clip => {
+              const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+              return dropTime < clipEnd && (dropTime + mediaFile.duration) > clip.timelineStart;
+            });
+            if (!hasOverlap) {
+              targetTrackId = track.id;
+              break;
+            }
+          }
+          
+          // If all tracks have overlaps, use the topmost track (V3)
+          if (!targetTrackId) {
+            targetTrackId = videoTracks[0]?.id;
+          }
+          
+          store.addClipFromMedia(mediaFile, targetTrackId, dropTime);
 
           if (mediaFile.width && mediaFile.height) {
             useEditorStore.setState((state) => ({
@@ -473,6 +536,20 @@ export function Timeline() {
                   allTrackIds={allTrackIds}
                 />
               ))}
+
+              {/* Overlap indicators for layering visualization - DISABLED */}
+              {/* {overlapRegions.map((region, idx) => (
+                <div
+                  key={`overlap-${idx}`}
+                  className="absolute top-0 bottom-0 bg-yellow-500/10 border-l border-r border-yellow-400/30 pointer-events-none z-10"
+                  style={{
+                    left: region.start * pixelsPerSecond,
+                    width: (region.end - region.start) * pixelsPerSecond,
+                    height: videoTracks.length * TRACK_HEIGHT,
+                  }}
+                  title={`Layered content: ${region.tracks.length} tracks overlapping`}
+                />
+              ))} */}
 
               {isTimelineDragOver && (
                 <div className="absolute inset-0 bg-blue-500/10 border-2 border-dashed border-blue-400/50 flex items-center justify-center z-30 rounded pointer-events-none">

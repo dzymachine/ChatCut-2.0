@@ -780,26 +780,99 @@ function createStore() {
       }
       linkedIds.add(clipId);
 
+      // Helper function to apply trim to overlapping clips
+      const trimOverlappingClips = (trackClips: Clip[], movedClip: Clip) => {
+        const movedStart = movedClip.timelineStart;
+        const movedDuration = movedClip.sourceEnd - movedClip.sourceStart;
+        const movedEnd = movedStart + movedDuration;
+
+        return trackClips
+          .flatMap((c) => {
+            // Skip the moved clip itself
+            if (c.id === clipId) return [c];
+
+            const clipStart = c.timelineStart;
+            const clipDuration = c.sourceEnd - c.sourceStart;
+            const clipEnd = clipStart + clipDuration;
+
+            // Check if there's an overlap
+            const overlapStart = Math.max(movedStart, clipStart);
+            const overlapEnd = Math.min(movedEnd, clipEnd);
+
+            if (overlapStart >= overlapEnd) {
+              // No overlap
+              return [c];
+            }
+
+            // There's an overlap - trim the underlying clip
+            if (overlapStart <= clipStart && overlapEnd >= clipEnd) {
+              // The moved clip completely covers this clip - delete it
+              return [];
+            }
+
+            const result: Clip[] = [];
+
+            if (overlapStart > clipStart) {
+              // Keep the part before the overlap
+              const beforeEnd = overlapStart;
+              const beforeDuration = beforeEnd - clipStart;
+              result.push({
+                ...c,
+                id: uuid(),
+                timelineStart: clipStart,
+                sourceEnd: c.sourceStart + beforeDuration,
+              });
+            }
+
+            if (overlapEnd < clipEnd) {
+              // Keep the part after the overlap
+              const afterStart = overlapEnd;
+              const overlapDuration = overlapEnd - overlapStart;
+              result.push({
+                ...c,
+                id: uuid(),
+                timelineStart: afterStart,
+                sourceStart: c.sourceStart + (overlapStart - clipStart) + overlapDuration,
+              });
+            }
+
+            return result;
+          });
+      };
+
       const newTracks = state.project.tracks.map((track) => {
         if (sourceTrackId === targetTrackId || !newTrackId) {
-          // Same track or no cross-track: apply delta to all linked clips
+          // Same track: apply delta to all linked clips first, then trim overlaps
+          let updatedClips = track.clips.map((c) => {
+            if (linkedIds.has(c.id)) {
+              return { ...c, timelineStart: Math.max(0, c.timelineStart + delta) };
+            }
+            return c;
+          });
+
+          // If staying on the same track, trim overlapping clips
+          if (sourceTrackId === track.id) {
+            const movedClip = updatedClips.find((c) => c.id === clipId);
+            if (movedClip) {
+              updatedClips = trimOverlappingClips(updatedClips, movedClip);
+            }
+          }
+
           return {
             ...track,
-            clips: track.clips.map((c) => {
-              if (linkedIds.has(c.id)) {
-                return { ...c, timelineStart: Math.max(0, c.timelineStart + delta) };
-              }
-              return c;
-            }),
+            clips: updatedClips,
           };
         }
-        // Cross-track move only for the primary clip (linked clips stay on their tracks)
+
+        // Cross-track move
         if (track.id === sourceTrackId) {
           return { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
         }
         if (track.id === targetTrackId) {
           const updatedClip = { ...primaryClip!, timelineStart: Math.max(0, newTimelineStart) };
-          return { ...track, clips: [...track.clips, updatedClip] };
+          // Add clip and trim overlapping clips on the target track
+          const clipsOnTrack = trimOverlappingClips([...track.clips, updatedClip], updatedClip);
+          return { ...track, clips: clipsOnTrack };
         }
         return track;
       });

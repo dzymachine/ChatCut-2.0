@@ -30,51 +30,9 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
     let unlisteners: (() => void)[] = [];
 
     const setupListeners = async () => {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const { listen } = await import('@tauri-apps/api/event');
-      const window = getCurrentWindow();
-
-      const unlistenEnter = await listen('tauri://drag-drop-hover', () => {
-        setIsDragOver(true);
-      });
-      unlisteners.push(unlistenEnter);
-
-      const unlistenLeave = await listen('tauri://drag-drop-cancelled', () => {
-        setIsDragOver(false);
-      });
-      unlisteners.push(unlistenLeave);
-
-      const unlistenDrop = await listen('tauri://drag-drop', async (event: any) => {
-        console.log('[VideoPreview] Tauri drag-drop event:', event);
-        setIsDragOver(false);
-        
-        const paths = event.payload?.paths as string[];
-        console.log('[VideoPreview] Drop paths:', paths);
-        if (!paths || paths.length === 0) return;
-
-        // Find the first video file
-        const videoPath = paths.find((path) => {
-          const ext = path.toLowerCase().split('.').pop();
-          return ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'ogv', 'ogg', 'ts', 'mts'].includes(ext || '');
-        });
-
-        console.log('[VideoPreview] Found video path:', videoPath);
-        if (!videoPath) return;
-
-        setIsLoading(true);
-        try {
-          console.log('[VideoPreview] Loading video from path:', videoPath);
-          await loadVideoFromPath(videoPath);
-          showToast("success", "Video loaded successfully");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Failed to load video";
-          console.error("[VideoPreview] Tauri drop load error:", msg);
-          showToast("error", msg);
-        } finally {
-          setIsLoading(false);
-        }
-      });
-      unlisteners.push(unlistenDrop);
+      // Note: Video preview drop handling is now done by the Timeline component
+      // to avoid duplicate clip creation. The timeline provides better control
+      // over clip placement (time and track positioning).
     };
 
     setupListeners();
@@ -287,10 +245,10 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
               </div>
               <div className="text-center">
                 <p className="text-neutral-300 font-medium">
-                  Drop a video or click to browse
+                  Drop videos on the timeline below
                 </p>
                 <p className="text-neutral-500 text-sm mt-1">
-                  MP4, WebM, MOV supported
+                  Or click to browse files
                 </p>
               </div>
             </button>

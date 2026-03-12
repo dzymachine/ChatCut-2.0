@@ -372,7 +372,7 @@ export class VideoEngine {
             videoEl = this.videoPool.getOrCreate(clip.sourceFileId, mediaFile.previewUrl);
           }
           result.push({ clip, track, videoElement: videoEl });
-          break; // One clip per track at most
+          // Allow multiple clips per track - if they overlap, the last one wins
         }
       }
     }
