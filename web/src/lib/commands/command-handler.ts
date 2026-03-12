@@ -266,10 +266,32 @@ function handleApplyEffect(action: ApplyEffectAction, clipId?: string | null): {
 
   const store = useEditorStore.getState();
 
-  // Merge descriptor defaults with provided parameters
+  // Find the target clip (needed for duration-dependent defaults)
+  let targetClip: import('@/types/editor').Clip | undefined;
+  for (const track of store.project.tracks) {
+    targetClip = track.clips.find((c) => c.id === targetClipId);
+    if (targetClip) break;
+  }
+
+  // Merge descriptor defaults with provided parameters.
+  // For crop x/y: skip the default (0) so the engine can center the window
+  // when the user didn't explicitly specify an offset.
+  const cropOffsetParams = new Set(['x', 'y']);
   const params: Record<string, number> = {};
   for (const paramDef of descriptor.parameters) {
+    if (action.effectId === 'crop' && cropOffsetParams.has(paramDef.id) && !(paramDef.id in action.parameters)) {
+      // Intentionally omitted — engine will compute the centered default.
+      continue;
+    }
     params[paramDef.id] = action.parameters[paramDef.id] ?? paramDef.default;
+  }
+
+  // fade_out: when start is not explicitly provided, place the fade at
+  // the end of the clip (clipDuration - fadeDuration) instead of at t=0.
+  if (action.effectId === 'fade_out' && action.parameters.start == null && targetClip) {
+    const clipDuration = targetClip.sourceEnd - targetClip.sourceStart;
+    const fadeDuration = params.duration ?? 1.0;
+    params.start = Math.max(0, clipDuration - fadeDuration);
   }
 
   const result = store.addEffect(targetClipId, action.effectId, params);

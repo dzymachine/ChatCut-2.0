@@ -13,6 +13,8 @@ export function ChatPanel() {
     setInputValue,
     chatMessages,
     isChatLoading,
+    chatMode,
+    setChatMode,
     isConnected,
     handleSubmit,
     checkConnection,
@@ -41,10 +43,22 @@ export function ChatPanel() {
   return (
     <div className="flex flex-col h-full bg-neutral-900 border-l border-neutral-800">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
+      <div className="grid grid-cols-3 items-center px-4 py-3 border-b border-neutral-800 gap-2">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-neutral-200">ChatCut</h2>
           <span className="text-xs text-neutral-500">AI Editor</span>
+        </div>
+        <div className="flex items-center justify-center">
+          <label className="flex items-center text-xs text-neutral-400">
+            <select
+              value={chatMode}
+              onChange={(e) => setChatMode(e.target.value as "effects" | "generation")}
+              className="h-7 rounded-md border border-neutral-700 bg-neutral-800 px-2 text-xs text-neutral-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="effects">Effects</option>
+              <option value="generation">Generate</option>
+            </select>
+          </label>
         </div>
         <div className="flex items-center gap-2">
           <div
@@ -75,15 +89,22 @@ export function ChatPanel() {
                 <p className="text-neutral-400 font-medium">
                   Welcome to ChatCut
                 </p>
-                <p>Drop a video and try saying:</p>
+                <p>
+                  {chatMode === "effects"
+                    ? "Drop a video and try saying:"
+                    : "Generation mode is available to switch to, but generation actions are not implemented yet."}
+                </p>
                 <div className="space-y-1.5">
-                  {[
-                    '"Zoom in by 150%"',
-                    '"Add a blur effect"',
-                    '"Set brightness to 120%"',
-                    '"Make it black and white"',
-                    '"Rotate 15 degrees"',
-                  ].map((example) => (
+                  {(chatMode === "effects"
+                    ? [
+                        '"Zoom in by 150%"',
+                        '"Add a blur effect"',
+                        '"Set brightness to 120%"',
+                        '"Make it black and white"',
+                        '"Rotate 15 degrees"',
+                      ]
+                    : ['"Generate a cinematic clip"', '"Create a stylized version"', '"Make an anime-style render"']
+                  ).map((example) => (
                     <button
                       key={example}
                       onClick={() => {
@@ -116,7 +137,9 @@ export function ChatPanel() {
           placeholder={
             isConnected === false
               ? "Backend not connected..."
-              : "Describe an edit..."
+              : chatMode === "effects"
+                ? "Describe an effect edit..."
+                : "Describe what to generate..."
           }
           disabled={isChatLoading || isConnected === false}
           className="flex-1 bg-neutral-800 border-neutral-700 text-neutral-200 placeholder:text-neutral-500 focus-visible:ring-blue-500/50 text-sm"
