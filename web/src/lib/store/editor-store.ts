@@ -113,6 +113,7 @@ export interface EditorStore {
 
   // ── Clip Manipulation (Timeline) ──
   moveClip: (clipId: string, newTimelineStart: number, newTrackId?: string) => void;
+  trimOverlappingClips: (clipId: string) => void;
   moveSelectedClips: (deltaSeconds: number, basePositions?: Record<string, number>) => void;
   trimClipStart: (clipId: string, newSourceStart: number, newTimelineStart: number) => void;
   trimClipEnd: (clipId: string, newSourceEnd: number) => void;
@@ -793,13 +794,68 @@ function createStore() {
       }
       linkedIds.add(clipId);
 
-      // Helper function to apply trim to overlapping clips
-      const trimOverlappingClips = (trackClips: Clip[], movedClip: Clip) => {
-        const movedStart = movedClip.timelineStart;
-        const movedDuration = movedClip.sourceEnd - movedClip.sourceStart;
-        const movedEnd = movedStart + movedDuration;
+      const newTracks = state.project.tracks.map((track) => {
+        if (sourceTrackId === targetTrackId || !newTrackId) {
+          // Same track: apply delta to all linked clips
+          return {
+            ...track,
+            clips: track.clips.map((c) => {
+              if (linkedIds.has(c.id)) {
+                return { ...c, timelineStart: Math.max(0, c.timelineStart + delta) };
+              }
+              return c;
+            }),
+          };
+        }
 
-        return trackClips
+        // Cross-track move
+        if (track.id === sourceTrackId) {
+          return { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
+        }
+        if (track.id === targetTrackId) {
+          const updatedClip = { ...primaryClip!, timelineStart: Math.max(0, newTimelineStart) };
+          return { ...track, clips: [...track.clips, updatedClip] };
+        }
+        return track;
+      });
+
+      const duration = calculateDuration(newTracks);
+      return {
+        project: {
+          ...state.project,
+          tracks: newTracks,
+          composition: { ...state.project.composition, duration },
+          updatedAt: Date.now(),
+        },
+      };
+    });
+  },
+
+  // Trim overlapping clips when a clip is dropped
+  trimOverlappingClips: (clipId: string) => {
+    set((state) => {
+      let movedClip: Clip | null = null;
+      let trackId: string | null = null;
+
+      // Find the moved clip and its track
+      for (const track of state.project.tracks) {
+        const found = track.clips.find((c) => c.id === clipId);
+        if (found) {
+          movedClip = found;
+          trackId = track.id;
+          break;
+        }
+      }
+      if (!movedClip || !trackId) return state;
+
+      const movedStart = movedClip.timelineStart;
+      const movedDuration = movedClip.sourceEnd - movedClip.sourceStart;
+      const movedEnd = movedStart + movedDuration;
+
+      const newTracks = state.project.tracks.map((track) => {
+        if (track.id !== trackId) return track;
+
+        const trimmedClips = track.clips
           .flatMap((c) => {
             // Skip the moved clip itself
             if (c.id === clipId) return [c];
@@ -851,43 +907,11 @@ function createStore() {
 
             return result;
           });
-      };
 
-      const newTracks = state.project.tracks.map((track) => {
-        if (sourceTrackId === targetTrackId || !newTrackId) {
-          // Same track: apply delta to all linked clips first, then trim overlaps
-          let updatedClips = track.clips.map((c) => {
-            if (linkedIds.has(c.id)) {
-              return { ...c, timelineStart: Math.max(0, c.timelineStart + delta) };
-            }
-            return c;
-          });
-
-          // If staying on the same track, trim overlapping clips
-          if (sourceTrackId === track.id) {
-            const movedClip = updatedClips.find((c) => c.id === clipId);
-            if (movedClip) {
-              updatedClips = trimOverlappingClips(updatedClips, movedClip);
-            }
-          }
-
-          return {
-            ...track,
-            clips: updatedClips,
-          };
-        }
-
-        // Cross-track move
-        if (track.id === sourceTrackId) {
-          return { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
-        }
-        if (track.id === targetTrackId) {
-          const updatedClip = { ...primaryClip!, timelineStart: Math.max(0, newTimelineStart) };
-          // Add clip and trim overlapping clips on the target track
-          const clipsOnTrack = trimOverlappingClips([...track.clips, updatedClip], updatedClip);
-          return { ...track, clips: clipsOnTrack };
-        }
-        return track;
+        return {
+          ...track,
+          clips: trimmedClips,
+        };
       });
 
       const duration = calculateDuration(newTracks);
