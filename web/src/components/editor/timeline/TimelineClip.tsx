@@ -297,6 +297,8 @@ export function TimelineClip({
 
       const handleMouseUp = () => {
         if (dragState.current && dragState.current.hasMoved) {
+          // Apply trimming to overlapping clips when the drag is complete
+          useEditorStore.getState().trimOverlappingClips(clip.id);
           useEditorStore.getState().commitUndoBatch();
         } else {
           useEditorStore.getState().cancelUndoBatch();
