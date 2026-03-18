@@ -71,7 +71,7 @@ class VideoElementPool {
     const el = document.createElement('video');
     el.playsInline = true;
     el.preload = 'auto';
-    el.muted = true;
+    el.muted = false;
     el.style.position = 'fixed';
     el.style.top = '-9999px';
     el.style.left = '-9999px';
@@ -415,6 +415,9 @@ export class VideoEngine {
 
     // Start playback on all active video clips
     const activeClips = this.getActiveVideoClips(timelineTime);
+    const isMuted = state.playback.isMuted;
+    const volume = state.playback.volume;
+
     for (const { clip, videoElement } of activeClips) {
       if (!videoElement) continue;
       const sourceTime = this.mapTimelineToSourceTime(clip, timelineTime);
@@ -422,6 +425,8 @@ export class VideoEngine {
       if (videoDur > 0) {
         videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
       }
+      videoElement.muted = isMuted;
+      videoElement.volume = volume;
       videoElement.play().catch((err) => {
         console.warn('[VideoEngine] play() rejected (wall-clock fallback active):', err.message);
       });
@@ -466,13 +471,16 @@ export class VideoEngine {
   }
 
   setVolume(volume: number): void {
-    if (!this.videoElement) return;
-    this.videoElement.volume = Math.max(0, Math.min(1, volume));
+    const clamped = Math.max(0, Math.min(1, volume));
+    for (const el of this.videoPool.getAll().values()) {
+      el.volume = clamped;
+    }
   }
 
   setMuted(muted: boolean): void {
-    if (!this.videoElement) return;
-    this.videoElement.muted = muted;
+    for (const el of this.videoPool.getAll().values()) {
+      el.muted = muted;
+    }
   }
 
   setPlaybackRate(rate: number): void {
