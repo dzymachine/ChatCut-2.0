@@ -1,6 +1,7 @@
 "use client";
 
 import { VideoPreview } from "@/components/editor/VideoPreview";
+import { VideoLibrary } from "@/components/editor/VideoLibrary";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { EffectsPanel } from "@/components/editor/effects-panel/EffectsPanel";
 import { Timeline } from "@/components/editor/timeline/Timeline";
@@ -21,6 +22,7 @@ export default function EditorPage() {
   const [, setEngineReady] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [isLibraryOpen, setIsLibraryOpen] = useState(true);
   const tauriStatus = useTauriStatus();
 
   const handleEngineReady = useCallback(() => {
@@ -120,6 +122,27 @@ export default function EditorPage() {
           <h1 className="text-sm font-bold text-white tracking-tight">
             ChatCut
           </h1>
+          <button
+            onClick={() => setIsLibraryOpen((open) => !open)}
+            className={`p-1.5 rounded transition-colors ${
+              isLibraryOpen
+                ? "text-blue-400 bg-blue-500/10"
+                : "text-neutral-400 hover:text-white hover:bg-neutral-800"
+            }`}
+            title="Toggle Library"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M4 19h16V5H4v14zm2-2V7h12v10H6z" />
+              <path d="M8 7v10" />
+            </svg>
+          </button>
           <span className="text-xs text-neutral-600">|</span>
           <span className="text-xs text-neutral-500">AI Video Editor</span>
           {tauriStatus.isDesktop && (
@@ -310,8 +333,15 @@ export default function EditorPage() {
         </div>
       </header>
 
-      {/* Main Editor Area — video preview + optional sidebar panel */}
+      {/* Main Editor Area — video library + preview + optional sidebar panel */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Left Library Panel */}
+        {isLibraryOpen && (
+          <div className="w-[280px] shrink-0 border-r border-neutral-800 bg-neutral-950">
+            <VideoLibrary />
+          </div>
+        )}
+
         {/* Video Preview — takes remaining space */}
         <div className="flex-1 flex flex-col min-w-0">
           <VideoPreview onEngineReady={handleEngineReady} />

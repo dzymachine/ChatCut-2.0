@@ -35,6 +35,7 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import { getVideoEngine } from '@/lib/engine/video-engine';
+import { isTauri } from '@/lib/tauri/bridge';
 import {
   type Project,
   type Track,
@@ -43,6 +44,7 @@ import {
   type PlaybackState,
   type ChatMessage,
   type EditorPanel,
+  type ChatMode,
   type UIState,
   type TimelineState,
   type TimelineTool,
@@ -71,7 +73,9 @@ export interface EditorStore {
 
   // ── Chat ──
   chatMessages: ChatMessage[];
+  chatConversations: Record<ChatMode, ChatMessage[]>;
   isChatLoading: boolean;
+  chatMode: ChatMode;
 
   // ── UI ──
   ui: UIState;
@@ -120,6 +124,7 @@ export interface EditorStore {
 
   // ── Clip Manipulation (Timeline) ──
   moveClip: (clipId: string, newTimelineStart: number, newTrackId?: string) => void;
+  trimOverlappingClips: (clipId: string) => void;
   moveSelectedClips: (deltaSeconds: number, basePositions?: Record<string, number>) => void;
   trimClipStart: (clipId: string, newSourceStart: number, newTimelineStart: number) => void;
   trimClipEnd: (clipId: string, newSourceEnd: number) => void;
@@ -145,6 +150,7 @@ export interface EditorStore {
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => string;
   updateChatMessage: (id: string, updates: Partial<ChatMessage>) => void;
   setChatLoading: (loading: boolean) => void;
+  setChatMode: (mode: ChatMode) => void;
   clearChat: () => void;
 
   // ── UI Actions ──
@@ -243,7 +249,12 @@ function createStore() {
   mediaFiles: new Map(),
   playback: { ...DEFAULT_PLAYBACK },
   chatMessages: [],
+  chatConversations: {
+    effects: [],
+    generation: [],
+  },
   isChatLoading: false,
+  chatMode: 'effects',
   ui: { ...DEFAULT_UI_STATE },
   timeline: { ...DEFAULT_TIMELINE_STATE },
   undoStack: [],
@@ -260,12 +271,25 @@ function createStore() {
         composition: { width, height, fps, duration: 0 },
       },
       chatMessages: [],
+      chatConversations: {
+        effects: [],
+        generation: [],
+      },
       undoStack: [],
       redoStack: [],
     });
   },
 
   addMediaFile: async (file: File): Promise<MediaFile> => {
+    // desktop drop/file-picker yields a File object that also has a native
+    // `path` property; we prefer using the path handler so that we can
+    // access the real file via the Tauri FS plugin (avoids sandbox issues).
+    // This keeps most of the codebase working with `addMediaFile` and avoids
+    // duplicating the path logic in every drop handler.
+    if (isTauri() && (file as any).path) {
+      return get().addMediaFileFromPath((file as any).path, file.name || '');
+    }
+
     const blobUrl = URL.createObjectURL(file);
     const mediaFile: MediaFile = {
       id: uuid(),
@@ -964,7 +988,7 @@ function createStore() {
 
       const newTracks = state.project.tracks.map((track) => {
         if (sourceTrackId === targetTrackId || !newTrackId) {
-          // Same track or no cross-track: apply delta to all linked clips
+          // Same track: apply delta to all linked clips
           return {
             ...track,
             clips: track.clips.map((c) => {
@@ -975,7 +999,8 @@ function createStore() {
             }),
           };
         }
-        // Cross-track move only for the primary clip (linked clips stay on their tracks)
+
+        // Cross-track move
         if (track.id === sourceTrackId) {
           return { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
         }
@@ -984,6 +1009,101 @@ function createStore() {
           return { ...track, clips: [...track.clips, updatedClip] };
         }
         return track;
+      });
+
+      const duration = calculateDuration(newTracks);
+      return {
+        project: {
+          ...state.project,
+          tracks: newTracks,
+          composition: { ...state.project.composition, duration },
+          updatedAt: Date.now(),
+        },
+      };
+    });
+  },
+
+  // Trim overlapping clips when a clip is dropped
+  trimOverlappingClips: (clipId: string) => {
+    set((state) => {
+      let movedClip: Clip | null = null;
+      let trackId: string | null = null;
+
+      // Find the moved clip and its track
+      for (const track of state.project.tracks) {
+        const found = track.clips.find((c) => c.id === clipId);
+        if (found) {
+          movedClip = found;
+          trackId = track.id;
+          break;
+        }
+      }
+      if (!movedClip || !trackId) return state;
+
+      const movedStart = movedClip.timelineStart;
+      const movedDuration = movedClip.sourceEnd - movedClip.sourceStart;
+      const movedEnd = movedStart + movedDuration;
+
+      const newTracks = state.project.tracks.map((track) => {
+        if (track.id !== trackId) return track;
+
+        const trimmedClips = track.clips
+          .flatMap((c) => {
+            // Skip the moved clip itself
+            if (c.id === clipId) return [c];
+
+            const clipStart = c.timelineStart;
+            const clipDuration = c.sourceEnd - c.sourceStart;
+            const clipEnd = clipStart + clipDuration;
+
+            // Check if there's an overlap
+            const overlapStart = Math.max(movedStart, clipStart);
+            const overlapEnd = Math.min(movedEnd, clipEnd);
+
+            if (overlapStart >= overlapEnd) {
+              // No overlap
+              return [c];
+            }
+
+            // There's an overlap - trim the underlying clip
+            if (overlapStart <= clipStart && overlapEnd >= clipEnd) {
+              // The moved clip completely covers this clip - delete it
+              return [];
+            }
+
+            const result: Clip[] = [];
+
+            if (overlapStart > clipStart) {
+              // Keep the part before the overlap
+              const beforeEnd = overlapStart;
+              const beforeDuration = beforeEnd - clipStart;
+              result.push({
+                ...c,
+                id: uuid(),
+                timelineStart: clipStart,
+                sourceEnd: c.sourceStart + beforeDuration,
+              });
+            }
+
+            if (overlapEnd < clipEnd) {
+              // Keep the part after the overlap
+              const afterStart = overlapEnd;
+              const overlapDuration = overlapEnd - overlapStart;
+              result.push({
+                ...c,
+                id: uuid(),
+                timelineStart: afterStart,
+                sourceStart: c.sourceStart + (overlapStart - clipStart) + overlapDuration,
+              });
+            }
+
+            return result;
+          });
+
+        return {
+          ...track,
+          clips: trimmedClips,
+        };
       });
 
       const duration = calculateDuration(newTracks);
@@ -1531,20 +1651,30 @@ function createStore() {
 
   addChatMessage: (message) => {
     const id = uuid();
+    const currentMode = get().chatMode;
+    const newMessage = { ...message, id, timestamp: Date.now() };
     set((state) => ({
-      chatMessages: [
-        ...state.chatMessages,
-        { ...message, id, timestamp: Date.now() },
-      ],
+      chatMessages: [...state.chatMessages, newMessage],
+      chatConversations: {
+        ...state.chatConversations,
+        [currentMode]: [...state.chatConversations[currentMode], newMessage],
+      },
     }));
     return id;
   },
 
   updateChatMessage: (id, updates) => {
+    const currentMode = get().chatMode;
     set((state) => ({
       chatMessages: state.chatMessages.map((msg) =>
         msg.id === id ? { ...msg, ...updates } : msg
       ),
+      chatConversations: {
+        ...state.chatConversations,
+        [currentMode]: state.chatConversations[currentMode].map((msg) =>
+          msg.id === id ? { ...msg, ...updates } : msg
+        ),
+      },
     }));
   },
 
@@ -1552,8 +1682,22 @@ function createStore() {
     set({ isChatLoading: loading });
   },
 
+  setChatMode: (mode) => {
+    set((state) => ({
+      chatMode: mode,
+      chatMessages: state.chatConversations[mode],
+    }));
+  },
+
   clearChat: () => {
-    set({ chatMessages: [] });
+    const currentMode = get().chatMode;
+    set((state) => ({
+      chatMessages: [],
+      chatConversations: {
+        ...state.chatConversations,
+        [currentMode]: [],
+      },
+    }));
   },
 
   // ── UI Actions ──

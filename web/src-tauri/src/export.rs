@@ -336,15 +336,43 @@ fn build_audio_filters(effects: &[AppliedEffect]) -> Vec<String> {
 
 /// Build the complete filter_complex string for multi-clip export
 fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: u32) -> String {
+    if clips.is_empty() {
+        return String::new();
+    }
+
+    // Sort clips by timeline_start to ensure correct order
+    let mut sorted_clips: Vec<&ExportClip> = clips.iter().collect();
+    sorted_clips.sort_by(|a, b| a.timeline_start.partial_cmp(&b.timeline_start).unwrap());
+
     let mut filter_parts = Vec::new();
     let mut video_streams = Vec::new();
     let mut audio_streams = Vec::new();
+    let mut stream_index = 0;
 
-    for (i, clip) in clips.iter().enumerate() {
+    // Handle initial gap if first clip doesn't start at 0
+    if sorted_clips[0].timeline_start > 0.0 {
+        let gap_duration = sorted_clips[0].timeline_start;
+        let gap_video = format!(
+            "color=black:size={}x{}:duration={:.6}[vgap{}]",
+            output_width, output_height, gap_duration, stream_index
+        );
+        let gap_audio = format!(
+            "anullsrc=duration={:.6}[agap{}]",
+            gap_duration, stream_index
+        );
+        filter_parts.push(gap_video);
+        filter_parts.push(gap_audio);
+        video_streams.push(format!("[vgap{}]", stream_index));
+        audio_streams.push(format!("[agap{}]", stream_index));
+        stream_index += 1;
+    }
+
+    // Process each clip and gaps between them
+    for (i, clip) in sorted_clips.iter().enumerate() {
         let input_v = format!("[{}:v]", i);
         let input_a = format!("[{}:a]", i);
-        let output_v = format!("[v{}]", i);
-        let output_a = format!("[a{}]", i);
+        let output_v = format!("[v{}]", stream_index);
+        let output_a = format!("[a{}]", stream_index);
 
         // 1. Trim
         let mut video_chain = format!(
@@ -378,12 +406,38 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
 
         filter_parts.push(format!("{}{}", video_chain, output_v));
         filter_parts.push(format!("{}{}", audio_chain, output_a));
-        video_streams.push(format!("[v{}]", i));
-        audio_streams.push(format!("[a{}]", i));
+        video_streams.push(format!("[v{}]", stream_index));
+        audio_streams.push(format!("[a{}]", stream_index));
+        stream_index += 1;
+
+        // Check for gap to next clip
+        if i < sorted_clips.len() - 1 {
+            let current_end = clip.timeline_start + (clip.source_end - clip.source_start);
+            let next_start = sorted_clips[i + 1].timeline_start;
+            if next_start > current_end {
+                let gap_duration = next_start - current_end;
+                let gap_video = format!(
+                    "color=black:size={}x{}:duration={:.6}[vgap{}]",
+                    output_width, output_height, gap_duration, stream_index
+                );
+                let gap_audio = format!(
+                    "anullsrc=duration={:.6}[agap{}]",
+                    gap_duration, stream_index
+                );
+                filter_parts.push(gap_video);
+                filter_parts.push(gap_audio);
+                video_streams.push(format!("[vgap{}]", stream_index));
+                audio_streams.push(format!("[agap{}]", stream_index));
+                stream_index += 1;
+            }
+        }
     }
 
-    // 5. Concatenate if multiple clips
-    if clips.len() == 1 {
+    // 5. Concatenate all streams
+    if video_streams.len() == 1 {
+        // Single stream: rename to output labels
+        filter_parts.push(format!("{}[vout]", video_streams[0]));
+        filter_parts.push(format!("{}[aout]", audio_streams[0]));
         return filter_parts.join(";");
     }
 
@@ -395,7 +449,7 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
     filter_parts.push(format!(
         "{}concat=n={}:v=1:a=1[vout][aout]",
         concat_input,
-        clips.len()
+        video_streams.len()
     ));
 
     filter_parts.join(";")
@@ -539,8 +593,14 @@ pub fn export_video(
         return Err("No clips to export".to_string());
     }
 
-    // Calculate total duration for progress tracking
-    let total_duration: f64 = clips.iter().map(|c| c.source_end - c.source_start).sum();
+    // Sort clips by timeline_start to calculate total duration correctly
+    let mut sorted_clips: Vec<&ExportClip> = clips.iter().collect();
+    sorted_clips.sort_by(|a, b| a.timeline_start.partial_cmp(&b.timeline_start).unwrap());
+
+    // Calculate total duration for progress tracking (full timeline span including gaps)
+    let min_start = sorted_clips.first().map(|c| c.timeline_start).unwrap_or(0.0);
+    let max_end = sorted_clips.last().map(|c| c.timeline_start + (c.source_end - c.source_start)).unwrap_or(0.0);
+    let total_duration = (max_end - min_start).max(0.0);
     let total_frames = (total_duration * settings.fps).ceil() as u64;
 
     // Build FFmpeg command
@@ -557,14 +617,9 @@ pub fn export_video(
     if !filter_complex.is_empty() {
         cmd.arg("-filter_complex").arg(&filter_complex);
 
-        // Map the output streams
-        if clips.len() == 1 {
-            cmd.arg("-map").arg("[v0]");
-            cmd.arg("-map").arg("[a0]");
-        } else {
-            cmd.arg("-map").arg("[vout]");
-            cmd.arg("-map").arg("[aout]");
-        }
+        // Map the output streams (always [vout][aout] now)
+        cmd.arg("-map").arg("[vout]");
+        cmd.arg("-map").arg("[aout]");
     }
 
     // Add codec settings

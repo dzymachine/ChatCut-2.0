@@ -17,7 +17,7 @@ import {
   openProjectDialog,
   getAppDataDir,
 } from '@/lib/tauri/bridge';
-import type { Project, Clip, Track } from '@/types/editor';
+import type { Project, Clip, Track, MediaFile } from '@/types/editor';
 import type { AppliedEffect } from '@/types/effects';
 import { effectsToTransform } from '@/lib/effects/transform-bridge';
 
@@ -226,6 +226,14 @@ export async function applyLoadedProject(file: ChatCutProjectFile): Promise<void
   }));
 
   // Apply to store — replace default project with loaded one
+  const newMediaFiles = new Map<string, MediaFile>();
+  for (const id of mediaIdByPath.values()) {
+    const mediaFile = useEditorStore.getState().mediaFiles.get(id);
+    if (mediaFile) {
+      newMediaFiles.set(id, mediaFile);
+    }
+  }
+
   useEditorStore.setState((state) => ({
     project: {
       ...state.project,
@@ -236,6 +244,7 @@ export async function applyLoadedProject(file: ChatCutProjectFile): Promise<void
       createdAt: p.createdAt,
       updatedAt: Date.now(),
     },
+    mediaFiles: newMediaFiles,
     undoStack: [],
     redoStack: [],
   }));

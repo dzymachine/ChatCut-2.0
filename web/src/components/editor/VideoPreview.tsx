@@ -24,10 +24,30 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
     }
   }, [isReady, onEngineReady]);
 
-  // ── Drag & Drop ──
+  // ── Tauri Drag & Drop Events ──
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let unlisteners: (() => void)[] = [];
+
+    const setupListeners = async () => {
+      // Note: Video preview drop handling is now done by the Timeline component
+      // to avoid duplicate clip creation. The timeline provides better control
+      // over clip placement (time and track positioning).
+    };
+
+    setupListeners();
+
+    return () => {
+      unlisteners.forEach(unlisten => unlisten());
+    };
+  }, [loadVideoFromPath]);
+
+  // ── Web Drag & Drop ──
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
     setIsDragOver(true);
   }, []);
 
@@ -43,21 +63,29 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       e.stopPropagation();
       setIsDragOver(false);
 
-      const files = Array.from(e.dataTransfer.files);
-      const videoFile = files.find((f) => isVideoFile(f));
-
-      if (videoFile) {
-        setIsLoading(true);
-        try {
-          await loadVideo(videoFile);
-          showToast("success", "Video loaded successfully");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Failed to load video";
-          console.error("[VideoPreview] Drop load error:", msg);
-          showToast("error", msg);
-        } finally {
-          setIsLoading(false);
+      let files = Array.from(e.dataTransfer.files);
+      if (files.length === 0 && e.dataTransfer.items) {
+        for (let i = 0; i < e.dataTransfer.items.length; i++) {
+          const item = e.dataTransfer.items[i];
+          if (item.kind === 'file') {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
         }
+      }
+      const videoFile = files.find((f) => isVideoFile(f));
+      if (!videoFile) return;
+
+      setIsLoading(true);
+      try {
+        await loadVideo(videoFile as File);
+        showToast("success", "Video loaded successfully");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to load video";
+        console.error("[VideoPreview] Drop load error:", msg);
+        showToast("error", msg);
+      } finally {
+        setIsLoading(false);
       }
     },
     [loadVideo]
@@ -221,10 +249,10 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
               </div>
               <div className="text-center">
                 <p className="text-neutral-300 font-medium">
-                  Drop a video or click to browse
+                  Drop videos on the timeline below
                 </p>
                 <p className="text-neutral-500 text-sm mt-1">
-                  MP4, WebM, MOV supported
+                  Or click to browse files
                 </p>
               </div>
             </button>

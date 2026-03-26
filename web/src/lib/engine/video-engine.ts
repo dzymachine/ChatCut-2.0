@@ -72,7 +72,7 @@ class VideoElementPool {
     const el = document.createElement('video');
     el.playsInline = true;
     el.preload = 'auto';
-    el.muted = true;
+    el.muted = false;
     el.style.position = 'fixed';
     el.style.top = '-9999px';
     el.style.left = '-9999px';
@@ -373,7 +373,7 @@ export class VideoEngine {
             videoEl = this.videoPool.getOrCreate(clip.sourceFileId, mediaFile.previewUrl);
           }
           result.push({ clip, track, videoElement: videoEl });
-          break; // One clip per track at most
+          // Allow multiple clips per track - if they overlap, the last one wins
         }
       }
     }
@@ -416,6 +416,9 @@ export class VideoEngine {
 
     // Start playback on all active video clips
     const activeClips = this.getActiveVideoClips(timelineTime);
+    const isMuted = state.playback.isMuted;
+    const volume = state.playback.volume;
+
     for (const { clip, videoElement } of activeClips) {
       if (!videoElement) continue;
       const sourceTime = this.mapTimelineToSourceTime(clip, timelineTime);
@@ -423,6 +426,8 @@ export class VideoEngine {
       if (videoDur > 0) {
         videoElement.currentTime = Math.min(Math.max(sourceTime, 0), videoDur);
       }
+      videoElement.muted = isMuted;
+      videoElement.volume = volume;
       videoElement.play().catch((err) => {
         console.warn('[VideoEngine] play() rejected (wall-clock fallback active):', err.message);
       });
@@ -467,13 +472,16 @@ export class VideoEngine {
   }
 
   setVolume(volume: number): void {
-    if (!this.videoElement) return;
-    this.videoElement.volume = Math.max(0, Math.min(1, volume));
+    const clamped = Math.max(0, Math.min(1, volume));
+    for (const el of this.videoPool.getAll().values()) {
+      el.volume = clamped;
+    }
   }
 
   setMuted(muted: boolean): void {
-    if (!this.videoElement) return;
-    this.videoElement.muted = muted;
+    for (const el of this.videoPool.getAll().values()) {
+      el.muted = muted;
+    }
   }
 
   setPlaybackRate(rate: number): void {
@@ -695,8 +703,31 @@ export class VideoEngine {
           ? effectsToTransformAtTime(clip.effects, clipTime)
           : clip.transform;
 
+        // Compute fade opacity from transition effects (fade_in / fade_out).
+        // These are time-based so they can't be baked into the static transform.
+        let effectOpacity = transform.opacity;
+        const clipTime = state.playback.currentTime - clip.timelineStart;
+
+        for (const effect of clip.effects) {
+          if (!effect.enabled) continue;
+          if (effect.effectId === 'fade_in') {
+            const duration = effect.parameters.duration ?? 1.0;
+            if (duration > 0 && clipTime >= 0 && clipTime < duration) {
+              effectOpacity *= clipTime / duration;
+            }
+          } else if (effect.effectId === 'fade_out') {
+            const duration = effect.parameters.duration ?? 1.0;
+            const clipDuration = clip.sourceEnd - clip.sourceStart;
+            const fadeStart = effect.parameters.start ?? Math.max(0, clipDuration - duration);
+            if (duration > 0 && clipTime >= fadeStart) {
+              const progress = Math.min(1, (clipTime - fadeStart) / duration);
+              effectOpacity *= 1 - progress;
+            }
+          }
+        }
+
         ctx.save();
-        ctx.globalAlpha = transform.opacity;
+        ctx.globalAlpha = Math.max(0, Math.min(1, effectOpacity));
         ctx.filter = buildCSSFilter(transform.filters);
 
         ctx.translate(
@@ -710,7 +741,24 @@ export class VideoEngine {
 
         ctx.scale(transform.scale, transform.scale);
 
-        const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
+        // Resolve source region — full frame by default, cropped if a crop effect is active.
+        const cropEffect = clip.effects.find((e) => e.enabled && e.effectId === 'crop');
+        const srcW = cropEffect
+          ? (cropEffect.parameters.width ?? videoElement.videoWidth)
+          : videoElement.videoWidth;
+        const srcH = cropEffect
+          ? (cropEffect.parameters.height ?? videoElement.videoHeight)
+          : videoElement.videoHeight;
+        // Default x/y to center the crop region; use explicit values if provided.
+        const srcX = cropEffect
+          ? (cropEffect.parameters.x ?? (videoElement.videoWidth - srcW) / 2)
+          : 0;
+        const srcY = cropEffect
+          ? (cropEffect.parameters.y ?? (videoElement.videoHeight - srcH) / 2)
+          : 0;
+
+        // Use the cropped dimensions to compute the on-canvas draw size.
+        const videoAspect = srcW / srcH;
         const canvasAspect = canvas.width / canvas.height;
 
         let drawWidth: number, drawHeight: number;
@@ -722,8 +770,10 @@ export class VideoEngine {
           drawWidth = canvas.height * videoAspect;
         }
 
+        // 9-arg drawImage: draws only [srcX, srcY, srcW, srcH] of the source.
         ctx.drawImage(
           videoElement,
+          srcX, srcY, srcW, srcH,
           -drawWidth / 2,
           -drawHeight / 2,
           drawWidth,

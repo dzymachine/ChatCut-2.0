@@ -304,7 +304,7 @@ You should see:
 1. **Desktop badge** — The header should show "Desktop" in purple. This means Tauri is running.
 2. **FFmpeg badge** — Should show "FFmpeg ✓" in green. If red, install FFmpeg (Step 5 in Prerequisites).
 3. **Chat connection** — The chat panel (toggle with the chat icon in the header) should show a green "Connected" dot. If red, make sure the backend is running on port 3001.
-4. **Video import** — Click the "+" button or drop a video file. In desktop mode, this opens a native file picker. In browser mode, it uses the standard browser dialog.
+4. **Video import** — Click the "+" button or drop a video file. In desktop mode, this opens a native file picker; you can also drag a file from Finder and the app will automatically read it via the native path. In browser mode, it uses the standard browser dialog.
 5. **AI editing** — With a video loaded and the backend connected, try typing "zoom in by 150%" in the chat. The AI should process it and apply the zoom.
 
 ---

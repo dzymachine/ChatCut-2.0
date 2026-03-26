@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore, isVideoFile, withUndo } from "@/lib/store/editor-store";
 import { executeAction } from "@/lib/commands/command-handler";
+import { isTauri } from "@/lib/tauri/bridge";  // desktop helper
 import { TRACK_HEIGHT, RULER_HEIGHT, TRACK_HEADER_WIDTH } from "@/types/editor";
 import type { Track } from "@/types/editor";
 import { TimelineToolbar } from "./TimelineToolbar";
@@ -58,6 +59,46 @@ export function Timeline() {
 
   const contentDuration = Math.max(duration + Math.max(duration * 0.2, 5), 10);
   const totalWidth = contentDuration * pixelsPerSecond;
+
+  // Calculate overlap regions between tracks
+  // const overlapRegions = useMemo(() => {
+  //   const regions: Array<{ start: number; end: number; tracks: string[] }> = [];
+    
+  //   // For each pair of video tracks, find overlapping time ranges
+  //   for (let i = 0; i < videoTracks.length; i++) {
+  //     for (let j = i + 1; j < videoTracks.length; j++) {
+  //       const track1 = videoTracks[i];
+  //       const track2 = videoTracks[j];
+        
+  //       // Find all time ranges where both tracks have clips
+  //       const ranges1 = track1.clips.map(clip => ({
+  //         start: clip.timelineStart,
+  //         end: clip.timelineStart + (clip.sourceEnd - clip.sourceStart)
+  //       }));
+  //       const ranges2 = track2.clips.map(clip => ({
+  //         start: clip.timelineStart,
+  //         end: clip.timelineStart + (clip.sourceEnd - clip.sourceStart)
+  //       }));
+        
+  //       // Find intersections
+  //       for (const r1 of ranges1) {
+  //         for (const r2 of ranges2) {
+  //           const overlapStart = Math.max(r1.start, r2.start);
+  //           const overlapEnd = Math.min(r1.end, r2.end);
+  //           if (overlapStart < overlapEnd) {
+  //             regions.push({
+  //               start: overlapStart,
+  //               end: overlapEnd,
+  //               tracks: [track1.id, track2.id]
+  //             });
+  //           }
+  //         }
+  //       }
+  //     }
+  //   }
+    
+  //   return regions;
+  // }, [videoTracks]);
 
   const resizeState = useRef<{ startY: number; startHeight: number } | null>(null);
 
@@ -217,6 +258,100 @@ export function Timeline() {
     }
   }, [currentTime, pixelsPerSecond, isPlaying]);
 
+  // ── Tauri Drag & Drop Events ──
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let unlisteners: (() => void)[] = [];
+
+    const setupListeners = async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+
+      const unlistenEnter = await listen('tauri://drag-drop-hover', () => {
+        setIsTimelineDragOver(true);
+      });
+      unlisteners.push(unlistenEnter);
+
+      const unlistenLeave = await listen('tauri://drag-drop-cancelled', () => {
+        setIsTimelineDragOver(false);
+      });
+      unlisteners.push(unlistenLeave);
+
+      const unlistenDrop = await listen('tauri://drag-drop', async (event: any) => {
+        setIsTimelineDragOver(false);
+        
+        const paths = event.payload?.paths as string[];
+        if (!paths || paths.length === 0) return;
+
+        // Find the first video file
+        const videoPath = paths.find((path) => {
+          const ext = path.toLowerCase().split('.').pop();
+          return ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'ogv', 'ogg', 'ts', 'mts'].includes(ext || '');
+        });
+
+        if (!videoPath) return;
+
+        const store = useEditorStore.getState();
+
+        // Calculate drop time based on mouse position (simplified - drop at current time)
+        const dropTime = store.playback.currentTime;
+
+        try {
+          const fileName = videoPath.split(/[/\\]/).pop() || 'video';
+          const mediaFile = await store.addMediaFileFromPath(videoPath, fileName);
+          
+          // Find the first empty video track (preferring higher tracks for layering)
+          const videoTracks = store.project.tracks.filter(t => t.type === 'video');
+          let targetTrackId: string | undefined;
+          
+          // Check if any track has space at the drop time
+          for (let i = 0; i < videoTracks.length; i++) {
+            const track = videoTracks[i];
+            const hasOverlap = track.clips.some(clip => {
+              const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+              return dropTime < clipEnd && (dropTime + mediaFile.duration) > clip.timelineStart;
+            });
+            if (!hasOverlap) {
+              targetTrackId = track.id;
+              break;
+            }
+          }
+          
+          // If all tracks have overlaps, use the topmost track (V3)
+          if (!targetTrackId) {
+            targetTrackId = videoTracks[0]?.id;
+          }
+          
+          store.addClipFromMedia(mediaFile, targetTrackId, dropTime);
+
+          if (mediaFile.width && mediaFile.height) {
+            useEditorStore.setState((state) => ({
+              project: {
+                ...state.project,
+                composition: {
+                  ...state.project.composition,
+                  width: mediaFile.width!,
+                  height: mediaFile.height!,
+                },
+              },
+            }));
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Failed to load video";
+          console.error("[Timeline] Tauri drop error:", msg);
+          showToast("error", msg);
+        }
+      });
+      unlisteners.push(unlistenDrop);
+    };
+
+    setupListeners();
+
+    return () => {
+      unlisteners.forEach(unlisten => unlisten());
+    };
+  }, []);
+
   const hasClips = useMemo(
     () => tracks.some((t) => t.clips.length > 0),
     [tracks]
@@ -227,6 +362,7 @@ export function Timeline() {
   const handleTimelineDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy'; // indicate we accept the file
     setIsTimelineDragOver(true);
   }, []);
 
@@ -242,7 +378,23 @@ export function Timeline() {
       e.stopPropagation();
       setIsTimelineDragOver(false);
 
-      const files = Array.from(e.dataTransfer.files);
+      let files = Array.from(e.dataTransfer.files);
+      // some webviews (Tauri on macOS) may not populate `files` directly but
+      // the items list still contains a File. use items as a fallback.
+      if (files.length === 0 && e.dataTransfer.items) {
+        for (let i = 0; i < e.dataTransfer.items.length; i++) {
+          const item = e.dataTransfer.items[i];
+          if (item.kind === 'file') {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+      }
+      const store = useEditorStore.getState();
+
+      // find a video candidate; for Tauri drops `files` often contain a
+      // File-like object with a native path property, but the name/extension
+      // is still usable for detection. isVideoFile handles both cases.
       const videoFile = files.find((f) => isVideoFile(f));
       if (!videoFile) return;
 
@@ -254,32 +406,40 @@ export function Timeline() {
         dropTime = Math.max(0, xInContainer / pixelsPerSecond);
       }
 
+      let mediaFile: any;
       try {
-        const store = useEditorStore.getState();
-        const mediaFile = await store.addMediaFile(videoFile);
+        // addMediaFile is now path-aware, so it will route to
+        // addMediaFileFromPath when running on desktop with a native path.
+        mediaFile = await store.addMediaFile(videoFile as File);
         store.addClipFromMedia(mediaFile, undefined, dropTime);
-
-        if (mediaFile.width && mediaFile.height) {
-          useEditorStore.setState((state) => ({
-            project: {
-              ...state.project,
-              composition: {
-                ...state.project.composition,
-                width: mediaFile.width!,
-                height: mediaFile.height!,
-              },
-            },
-          }));
-        }
-
-        const engine = getVideoEngine();
-        await engine.loadSource(mediaFile.previewUrl);
-        engine.resizeCanvas();
-
-        showToast("success", "Video added to timeline");
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Failed to load video";
         console.error("[Timeline] Drop error:", msg);
+        showToast("error", msg);
+        return;
+      }
+
+      if (mediaFile.width && mediaFile.height) {
+        useEditorStore.setState((state) => ({
+          project: {
+            ...state.project,
+            composition: {
+              ...state.project.composition,
+              width: mediaFile.width!,
+              height: mediaFile.height!,
+            },
+          },
+        }));
+      }
+
+      try {
+        const engine = getVideoEngine();
+        await engine.loadSource(mediaFile.previewUrl);
+        engine.resizeCanvas();
+        showToast("success", "Video added to timeline");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to load video";
+        console.error("[Timeline] Drop error (engine):", msg);
         showToast("error", msg);
       }
     },
@@ -376,6 +536,20 @@ export function Timeline() {
                   allTrackIds={allTrackIds}
                 />
               ))}
+
+              {/* Overlap indicators for layering visualization - DISABLED */}
+              {/* {overlapRegions.map((region, idx) => (
+                <div
+                  key={`overlap-${idx}`}
+                  className="absolute top-0 bottom-0 bg-yellow-500/10 border-l border-r border-yellow-400/30 pointer-events-none z-10"
+                  style={{
+                    left: region.start * pixelsPerSecond,
+                    width: (region.end - region.start) * pixelsPerSecond,
+                    height: videoTracks.length * TRACK_HEIGHT,
+                  }}
+                  title={`Layered content: ${region.tracks.length} tracks overlapping`}
+                />
+              ))} */}
 
               {isTimelineDragOver && (
                 <div className="absolute inset-0 bg-blue-500/10 border-2 border-dashed border-blue-400/50 flex items-center justify-center z-30 rounded pointer-events-none">

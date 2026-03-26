@@ -159,11 +159,11 @@ def get_desktop_function_declarations():
                     },
                     "x": {
                         "type": "number",
-                        "description": "X offset for crop origin (from left). Default 0."
+                        "description": "X offset for crop origin in pixels (from left edge). Omit to center the crop horizontally."
                     },
                     "y": {
                         "type": "number",
-                        "description": "Y offset for crop origin (from top). Default 0."
+                        "description": "Y offset for crop origin in pixels (from top edge). Omit to center the crop vertically."
                     }
                 },
                 "required": ["width", "height"]

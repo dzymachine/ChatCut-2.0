@@ -19,9 +19,11 @@ export function useChat() {
   const {
     chatMessages,
     isChatLoading,
+    chatMode,
     addChatMessage,
     updateChatMessage,
     setChatLoading,
+    setChatMode,
   } = useEditorStore();
 
   // Check backend connection
@@ -41,6 +43,16 @@ export function useChat() {
 
       // Add user message
       addChatMessage({ role: "user", content: trimmed });
+
+      // Generation mode is intentionally separated but not implemented yet.
+      if (chatMode === "generation") {
+        addChatMessage({
+          role: "assistant",
+          content:
+            "Generation mode is set up, but AI generation is not implemented yet. Switch to Effects mode to apply edits.",
+        });
+        return;
+      }
 
       // Add a loading placeholder for the assistant response
       const assistantMsgId = addChatMessage({
@@ -128,7 +140,7 @@ export function useChat() {
         setChatLoading(false);
       }
     },
-    [isChatLoading, addChatMessage, updateChatMessage, setChatLoading]
+    [chatMode, isChatLoading, addChatMessage, updateChatMessage, setChatLoading]
   );
 
   const handleSubmit = useCallback(
@@ -144,6 +156,8 @@ export function useChat() {
     setInputValue,
     chatMessages,
     isChatLoading,
+    chatMode,
+    setChatMode,
     isConnected,
     sendMessage,
     handleSubmit,
