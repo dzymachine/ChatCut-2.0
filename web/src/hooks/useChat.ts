@@ -89,7 +89,7 @@ export function useChat() {
           const editActions = mapAIActions(response.actions);
 
           if (editActions.length > 0) {
-            const results = executeActions(editActions);
+            const results = executeActions(editActions, 'ai', response.response);
 
             // Build a summary of what was done
             const successActions = results.filter((r) => r.success);

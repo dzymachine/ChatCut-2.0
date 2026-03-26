@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useVideoEngine } from "@/hooks/useVideoEngine";
 import { useEditorStore, isVideoFile } from "@/lib/store/editor-store";
 import { TransportControls } from "./TransportControls";
+import { TransformHandles } from "./TransformHandles";
 import { isTauri, openVideoFileDialog } from "@/lib/tauri/bridge";
 import { showToast } from "@/components/ui/toast-notification";
 
@@ -152,6 +153,9 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
           className="max-w-full max-h-full object-contain"
           style={{ imageRendering: "auto" }}
         />
+
+        {/* Transform handles overlay */}
+        <TransformHandles canvasRef={canvasRef} />
 
         {/* Drop overlay */}
         {isDragOver && (

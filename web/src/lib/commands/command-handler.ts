@@ -27,6 +27,7 @@ import type {
   UpdateEffectAction,
   ToggleEffectAction,
   Track,
+  Clip,
   PlaybackState,
 } from '@/types/editor';
 import { getEffectDescriptor } from '@/lib/effects/registry';
@@ -35,7 +36,11 @@ import { getEffectDescriptor } from '@/lib/effects/registry';
  * Execute an editing action from the AI or from the UI.
  * Captures undo state automatically.
  */
-export function executeAction(action: EditAction): { success: boolean; message: string } {
+export function executeAction(
+  action: EditAction,
+  source: 'ai' | 'user' = 'user',
+  reason?: string,
+): { success: boolean; message: string } {
   const store = useEditorStore.getState();
   const clip = store.getActiveClip();
   const engine = getVideoEngine();
@@ -111,6 +116,10 @@ export function executeAction(action: EditAction): { success: boolean; message: 
           playback: afterPlayback as PlaybackState,
         },
       });
+
+      if (source === 'ai' && clip?.id) {
+        writeAIProvenance(clip.id, previousTracks as Track[], afterTracks as Track[], reason);
+      }
     }
   }
 }
@@ -118,8 +127,12 @@ export function executeAction(action: EditAction): { success: boolean; message: 
 /**
  * Execute multiple actions in sequence.
  */
-export function executeActions(actions: EditAction[]): { success: boolean; message: string }[] {
-  return actions.map((action) => executeAction(action));
+export function executeActions(
+  actions: EditAction[],
+  source: 'ai' | 'user' = 'user',
+  reason?: string,
+): { success: boolean; message: string }[] {
+  return actions.map((action) => executeAction(action, source, reason));
 }
 
 // ─── Individual Action Handlers ─────────────────────────────────────────────
@@ -306,6 +319,82 @@ function handleToggleEffect(action: ToggleEffectAction, clipId?: string | null):
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+function writeAIProvenance(
+  clipId: string,
+  previousTracks: Track[],
+  afterTracks: Track[],
+  reason?: string,
+) {
+  const store = useEditorStore.getState();
+
+  let oldClip: Clip | undefined;
+  let newClip: Clip | undefined;
+  for (const track of previousTracks) {
+    oldClip = track.clips.find((c) => c.id === clipId);
+    if (oldClip) break;
+  }
+  for (const track of afterTracks) {
+    newClip = track.clips.find((c) => c.id === clipId);
+    if (newClip) break;
+  }
+
+  if (!oldClip || !newClip) return;
+
+  const now = Date.now();
+
+  const transformKeys = ['scale', 'positionX', 'positionY', 'rotation', 'opacity'] as const;
+  for (const key of transformKeys) {
+    if (oldClip.transform[key] !== newClip.transform[key]) {
+      store.setProvenance(clipId, `transform.${key}`, {
+        source: 'ai',
+        previousValue: oldClip.transform[key],
+        timestamp: now,
+        aiReason: reason,
+        accepted: false,
+      });
+    }
+  }
+
+  const filterKeys = ['blur', 'brightness', 'contrast', 'saturate', 'grayscale', 'sepia', 'hueRotate'] as const;
+  for (const key of filterKeys) {
+    if (oldClip.transform.filters[key] !== newClip.transform.filters[key]) {
+      store.setProvenance(clipId, `transform.filters.${key}`, {
+        source: 'ai',
+        previousValue: oldClip.transform.filters[key],
+        timestamp: now,
+        aiReason: reason,
+        accepted: false,
+      });
+    }
+  }
+
+  for (const newEffect of newClip.effects) {
+    const oldEffect = oldClip.effects.find((e) => e.id === newEffect.id);
+    if (!oldEffect) {
+      store.setProvenance(clipId, `effect:${newEffect.id}`, {
+        source: 'ai',
+        previousValue: null,
+        timestamp: now,
+        aiReason: reason,
+        accepted: false,
+      });
+    } else {
+      for (const [paramId, newVal] of Object.entries(newEffect.parameters)) {
+        const oldVal = oldEffect.parameters[paramId];
+        if (oldVal !== newVal) {
+          store.setProvenance(clipId, `effect:${newEffect.id}.${paramId}`, {
+            source: 'ai',
+            previousValue: oldVal ?? null,
+            timestamp: now,
+            aiReason: reason,
+            accepted: false,
+          });
+        }
+      }
+    }
+  }
+}
 
 function describeAction(action: EditAction): string {
   switch (action.type) {

@@ -2,6 +2,7 @@
 
 import { VideoPreview } from "@/components/editor/VideoPreview";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { EffectsPanel } from "@/components/editor/effects-panel/EffectsPanel";
 import { Timeline } from "@/components/editor/timeline/Timeline";
 import { ExportDialog } from "@/components/editor/export/ExportDialog";
 import { useEditorStore } from "@/lib/store/editor-store";
@@ -11,8 +12,8 @@ import { useCallback, useEffect, useState } from "react";
 import { showToast } from "@/components/ui/toast-notification";
 
 export default function EditorPage() {
-  const isChatOpen = useEditorStore((s) => s.ui.isChatOpen);
-  const toggleChat = useEditorStore((s) => s.toggleChat);
+  const activePanel = useEditorStore((s) => s.ui.activePanel);
+  const togglePanel = useEditorStore((s) => s.togglePanel);
   const canUndo = useEditorStore((s) => s.undoStack.length > 0);
   const canRedo = useEditorStore((s) => s.redoStack.length > 0);
   const undo = useEditorStore((s) => s.undo);
@@ -54,7 +55,7 @@ export default function EditorPage() {
     }
   }, []);
 
-  // Keyboard shortcuts for undo/redo and save
+  // Keyboard shortcuts for undo/redo, save, and panel toggles
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (
@@ -82,6 +83,22 @@ export default function EditorPage() {
       if ((e.metaKey || e.ctrlKey) && e.key === "o") {
         e.preventDefault();
         handleLoad();
+      }
+
+      // Panel toggle shortcuts (Cmd/Ctrl+Shift+key)
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
+        if (e.key === "C" || e.key === "c") {
+          e.preventDefault();
+          useEditorStore.getState().togglePanel("chat");
+        }
+        if (e.key === "E" || e.key === "e") {
+          e.preventDefault();
+          useEditorStore.getState().togglePanel("effects");
+        }
+        if (e.key === "M" || e.key === "m") {
+          e.preventDefault();
+          useEditorStore.getState().togglePanel("media");
+        }
       }
     };
 
@@ -214,15 +231,15 @@ export default function EditorPage() {
 
           <span className="text-xs text-neutral-700 mx-1">|</span>
 
-          {/* Chat Toggle */}
+          {/* Panel Toggle Buttons */}
           <button
-            onClick={toggleChat}
+            onClick={() => togglePanel("chat")}
             className={`p-1.5 rounded transition-colors ${
-              isChatOpen
+              activePanel === "chat"
                 ? "text-blue-400 bg-blue-500/10"
                 : "text-neutral-400 hover:text-white hover:bg-neutral-800"
             }`}
-            title="Toggle Chat Panel"
+            title="Chat (\u21E7\u2318C)"
           >
             <svg
               width="14"
@@ -235,20 +252,86 @@ export default function EditorPage() {
               <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" />
             </svg>
           </button>
+          <button
+            onClick={() => togglePanel("effects")}
+            className={`p-1.5 rounded transition-colors ${
+              activePanel === "effects"
+                ? "text-blue-400 bg-blue-500/10"
+                : "text-neutral-400 hover:text-white hover:bg-neutral-800"
+            }`}
+            title="Effects (\u21E7\u2318E)"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <line x1="4" y1="21" x2="4" y2="14" />
+              <line x1="4" y1="10" x2="4" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12" y2="3" />
+              <line x1="20" y1="21" x2="20" y2="16" />
+              <line x1="20" y1="12" x2="20" y2="3" />
+              <line x1="1" y1="14" x2="7" y2="14" />
+              <line x1="9" y1="8" x2="15" y2="8" />
+              <line x1="17" y1="16" x2="23" y2="16" />
+            </svg>
+          </button>
+          <button
+            onClick={() => togglePanel("media")}
+            className={`p-1.5 rounded transition-colors ${
+              activePanel === "media"
+                ? "text-blue-400 bg-blue-500/10"
+                : "text-neutral-400 hover:text-white hover:bg-neutral-800"
+            }`}
+            title="Media (\u21E7\u2318M)"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
+              <line x1="7" y1="2" x2="7" y2="22" />
+              <line x1="17" y1="2" x2="17" y2="22" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <line x1="2" y1="7" x2="7" y2="7" />
+              <line x1="2" y1="17" x2="7" y2="17" />
+              <line x1="17" y1="17" x2="22" y2="17" />
+              <line x1="17" y1="7" x2="22" y2="7" />
+            </svg>
+          </button>
         </div>
       </header>
 
-      {/* Main Editor Area — video preview + optional chat panel */}
+      {/* Main Editor Area — video preview + optional sidebar panel */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Video Preview — takes remaining space */}
         <div className="flex-1 flex flex-col min-w-0">
           <VideoPreview onEngineReady={handleEngineReady} />
         </div>
 
-        {/* Chat Panel — fixed width sidebar */}
-        {isChatOpen && (
-          <div className="w-[360px] shrink-0">
-            <ChatPanel />
+        {/* Sidebar Panel — fixed width, content switches by activePanel */}
+        {activePanel !== null && (
+          <div className="w-[360px] shrink-0 flex flex-col h-full">
+            {activePanel === "chat" && <ChatPanel />}
+            {activePanel === "effects" && <EffectsPanel />}
+            {activePanel === "media" && (
+              <div className="flex flex-col h-full bg-neutral-900 border-l border-neutral-800">
+                <div className="flex items-center px-4 py-3 border-b border-neutral-800">
+                  <h2 className="text-sm font-semibold text-neutral-200">Media</h2>
+                </div>
+                <div className="flex-1 flex items-center justify-center">
+                  <p className="text-sm text-neutral-500">Media browser coming soon</p>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

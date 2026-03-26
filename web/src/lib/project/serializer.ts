@@ -19,6 +19,7 @@ import {
 } from '@/lib/tauri/bridge';
 import type { Project, Clip, Track } from '@/types/editor';
 import type { AppliedEffect } from '@/types/effects';
+import { effectsToTransform } from '@/lib/effects/transform-bridge';
 
 // ─── Project File Format ────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ interface SerializedClip {
   /** Linked clip group ID — null if unlinked. */
   linkId: string | null;
   effects: AppliedEffect[];
+  provenance?: Record<string, unknown>;
   transitions: unknown[];
 }
 
@@ -110,6 +112,7 @@ export function serializeProject(): ChatCutProjectFile {
           keyframes: [...e.keyframes],
           enabled: e.enabled,
         })),
+        provenance: { ...clip.provenance },
         transitions: clip.transitions,
       };
     }),
@@ -209,23 +212,9 @@ export async function applyLoadedProject(file: ChatCutProjectFile): Promise<void
       sourceEnd: clip.sourceEnd,
       timelineStart: clip.timelineStart,
       linkId: clip.linkId ?? null,
-      transform: {
-        scale: 1.0,
-        positionX: 0,
-        positionY: 0,
-        rotation: 0,
-        opacity: 1.0,
-        filters: {
-          blur: 0,
-          brightness: 1.0,
-          contrast: 1.0,
-          saturate: 1.0,
-          grayscale: 0,
-          sepia: 0,
-          hueRotate: 0,
-        },
-      },
       effects: clip.effects ?? [],
+      transform: effectsToTransform(clip.effects ?? []),
+      provenance: (clip.provenance ?? {}) as Clip['provenance'],
       transitions: (clip.transitions ?? []) as Clip['transitions'],
     })),
     muted: track.muted,

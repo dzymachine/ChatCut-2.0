@@ -94,10 +94,20 @@ export interface AppliedEffect {
 /** Interpolation mode between keyframes */
 export type KeyframeInterpolation = 'linear' | 'bezier' | 'hold' | 'ease_in' | 'ease_out';
 
+/** Bezier control handles for custom easing curves */
+export interface BezierHandles {
+  inX: number;
+  inY: number;
+  outX: number;
+  outY: number;
+}
+
 /**
  * A keyframe for a specific parameter of an effect.
  */
 export interface EffectKeyframe {
+  /** Unique identifier for selection/manipulation */
+  id: string;
   /** Time in seconds (relative to clip start) */
   time: number;
   /** Parameter ID this keyframe is for */
@@ -106,6 +116,8 @@ export interface EffectKeyframe {
   value: number;
   /** Interpolation mode to the next keyframe */
   interpolation: KeyframeInterpolation;
+  /** Bezier handles when interpolation is 'bezier' */
+  bezierHandles?: BezierHandles;
 }
 
 // ─── Effect Action Types ────────────────────────────────────────────────────

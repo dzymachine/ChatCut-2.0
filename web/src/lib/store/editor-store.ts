@@ -21,7 +21,7 @@
  *     Cross-slice: NEVER modifies playback state (except removeClip edge case)
  *
  *   UI SLICE (ui.*):
- *     Modified by: setActivePanel, setSelectedClip, toggleChat
+ *     Modified by: setActivePanel, togglePanel, setSelectedClip
  *     Cross-slice: addClipFromMedia sets selectedClipIds
  *
  *   TIMELINE SLICE (timeline.*):
@@ -42,6 +42,7 @@ import {
   type MediaFile,
   type PlaybackState,
   type ChatMessage,
+  type EditorPanel,
   type UIState,
   type TimelineState,
   type TimelineTool,
@@ -56,6 +57,7 @@ import {
   DEFAULT_TIMELINE_STATE,
 } from '@/types/editor';
 import { createDefaultEffects, effectsToTransform } from '@/lib/effects/transform-bridge';
+import type { EffectKeyframe } from '@/types/effects';
 
 // ─── Store Interface ────────────────────────────────────────────────────────
 
@@ -93,13 +95,22 @@ export interface EditorStore {
   updateTransform: (clipId: string, transform: Partial<Transform>) => void;
   updateFilter: (clipId: string, filter: keyof FilterState, value: number) => void;
   resetTransform: (clipId: string) => void;
+  batchUpdateTransform: (clipIds: string[], delta: Partial<Transform>) => void;
 
   // ── Effect Actions ──
   addEffect: (clipId: string, effectId: string, parameters?: Record<string, number>) => AppliedEffect | null;
   removeEffect: (clipId: string, appliedEffectId: string) => void;
   updateEffect: (clipId: string, appliedEffectId: string, parameters: Record<string, number>) => void;
   toggleEffect: (clipId: string, appliedEffectId: string, enabled: boolean) => void;
+  reorderEffects: (clipId: string, appliedEffectIds: string[]) => void;
   getClipEffects: (clipId: string) => AppliedEffect[];
+
+  // ── Keyframe Actions ──
+  addKeyframe: (clipId: string, effectId: string, parameterId: string, time: number, value: number, interpolation?: import('@/types/effects').KeyframeInterpolation) => import('@/types/effects').EffectKeyframe;
+  removeKeyframe: (clipId: string, effectId: string, keyframeId: string) => void;
+  updateKeyframe: (clipId: string, effectId: string, keyframeId: string, updates: Partial<Pick<import('@/types/effects').EffectKeyframe, 'time' | 'value' | 'interpolation' | 'bezierHandles'>>) => void;
+  getPropertyKeyframes: (clipId: string, effectId: string, parameterId: string) => import('@/types/effects').EffectKeyframe[];
+  clearPropertyKeyframes: (clipId: string, effectId: string, parameterId: string) => void;
 
   // ── Timeline Actions ──
   setTimelineZoom: (pixelsPerSecond: number) => void;
@@ -113,6 +124,7 @@ export interface EditorStore {
   trimClipStart: (clipId: string, newSourceStart: number, newTimelineStart: number) => void;
   trimClipEnd: (clipId: string, newSourceEnd: number) => void;
   splitClip: (clipId: string, splitTimeSeconds: number) => [Clip, Clip] | null;
+  freezeFrame: (clipId: string, atTime: number, duration?: number) => Clip | null;
   addTrack: (type: TrackType, label?: string) => Track;
 
   // ── Linked Clip Actions ──
@@ -137,9 +149,17 @@ export interface EditorStore {
 
   // ── UI Actions ──
   setActivePanel: (panel: UIState['activePanel']) => void;
+  togglePanel: (panel: EditorPanel) => void;
   setSelectedClip: (clipId: string | null) => void;
   toggleClipSelection: (clipId: string) => void;
-  toggleChat: () => void;
+
+  // ── Provenance Actions ──
+  setProvenance: (clipId: string, path: string, entry: import('@/types/editor').ProvenanceEntry) => void;
+  clearPropertyProvenance: (clipId: string, path: string) => void;
+  acceptAIChange: (clipId: string, path: string) => void;
+  revertAIChange: (clipId: string, path: string) => void;
+  acceptAllAIChanges: (clipId: string) => void;
+  revertAllAIChanges: (clipId: string) => void;
 
   // ── Undo/Redo ──
   pushUndo: (command: Omit<Command, 'id' | 'timestamp'>) => void;
@@ -372,6 +392,7 @@ function createStore() {
       linkId: sharedLinkId,
       transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
       effects: createDefaultEffects(),
+      provenance: {},
       transitions: [],
     };
 
@@ -390,6 +411,7 @@ function createStore() {
           linkId: sharedLinkId,
           transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
           effects: createDefaultEffects(),
+          provenance: {},
           transitions: [],
         };
       }
@@ -582,6 +604,29 @@ function createStore() {
     });
   },
 
+  batchUpdateTransform: (clipIds, delta) => {
+    set((state) => {
+      const idSet = new Set(clipIds);
+      const newTracks = state.project.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (!idSet.has(clip.id)) return clip;
+          const newTransform = { ...clip.transform };
+          if (delta.positionX !== undefined) newTransform.positionX += delta.positionX;
+          if (delta.positionY !== undefined) newTransform.positionY += delta.positionY;
+          if (delta.scale !== undefined) newTransform.scale += delta.scale;
+          if (delta.rotation !== undefined) newTransform.rotation += delta.rotation;
+          if (delta.opacity !== undefined) newTransform.opacity = Math.max(0, Math.min(1, clip.transform.opacity + delta.opacity));
+          const newEffects = syncEffectsFromTransform(clip.effects, newTransform);
+          return { ...clip, transform: newTransform, effects: newEffects };
+        }),
+      }));
+      return {
+        project: { ...state.project, tracks: newTracks, updatedAt: Date.now() },
+      };
+    });
+  },
+
   // ── Effect Actions ──
 
   addEffect: (clipId, effectId, parameters) => {
@@ -692,6 +737,34 @@ function createStore() {
     });
   },
 
+  reorderEffects: (clipId, appliedEffectIds) => {
+    set((state) => {
+      const newTracks = state.project.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (clip.id !== clipId) return clip;
+          const effectMap = new Map(clip.effects.map((e) => [e.id, e]));
+          const reordered: AppliedEffect[] = [];
+          for (const id of appliedEffectIds) {
+            const effect = effectMap.get(id);
+            if (effect) reordered.push(effect);
+          }
+          for (const e of clip.effects) {
+            if (!appliedEffectIds.includes(e.id)) reordered.push(e);
+          }
+          return {
+            ...clip,
+            effects: reordered,
+            transform: effectsToTransform(reordered),
+          };
+        }),
+      }));
+      return {
+        project: { ...state.project, tracks: newTracks, updatedAt: Date.now() },
+      };
+    });
+  },
+
   getClipEffects: (clipId) => {
     const state = get();
     for (const track of state.project.tracks) {
@@ -699,6 +772,125 @@ function createStore() {
       if (clip) return clip.effects;
     }
     return [];
+  },
+
+  // ── Keyframe Actions ──
+
+  addKeyframe: (clipId, effectId, parameterId, time, value, interpolation = 'linear') => {
+    const kf: EffectKeyframe = {
+      id: uuid(),
+      time,
+      parameterId,
+      value,
+      interpolation,
+    };
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            return {
+              ...clip,
+              effects: clip.effects.map((e) =>
+                e.id === effectId
+                  ? { ...e, keyframes: [...e.keyframes, kf].sort((a, b) => a.time - b.time) }
+                  : e
+              ),
+            };
+          }),
+        })),
+        updatedAt: Date.now(),
+      },
+    }));
+    return kf;
+  },
+
+  removeKeyframe: (clipId, effectId, keyframeId) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            return {
+              ...clip,
+              effects: clip.effects.map((e) =>
+                e.id === effectId
+                  ? { ...e, keyframes: e.keyframes.filter((k) => k.id !== keyframeId) }
+                  : e
+              ),
+            };
+          }),
+        })),
+        updatedAt: Date.now(),
+      },
+    }));
+  },
+
+  updateKeyframe: (clipId, effectId, keyframeId, updates) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            return {
+              ...clip,
+              effects: clip.effects.map((e) =>
+                e.id === effectId
+                  ? {
+                      ...e,
+                      keyframes: e.keyframes
+                        .map((k) => (k.id === keyframeId ? { ...k, ...updates } : k))
+                        .sort((a, b) => a.time - b.time),
+                    }
+                  : e
+              ),
+            };
+          }),
+        })),
+        updatedAt: Date.now(),
+      },
+    }));
+  },
+
+  getPropertyKeyframes: (clipId, effectId, parameterId) => {
+    const state = get();
+    for (const track of state.project.tracks) {
+      const clip = track.clips.find((c) => c.id === clipId);
+      if (clip) {
+        const effect = clip.effects.find((e) => e.id === effectId);
+        if (effect) return effect.keyframes.filter((k) => k.parameterId === parameterId);
+      }
+    }
+    return [];
+  },
+
+  clearPropertyKeyframes: (clipId, effectId, parameterId) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            return {
+              ...clip,
+              effects: clip.effects.map((e) =>
+                e.id === effectId
+                  ? { ...e, keyframes: e.keyframes.filter((k) => k.parameterId !== parameterId) }
+                  : e
+              ),
+            };
+          }),
+        })),
+        updatedAt: Date.now(),
+      },
+    }));
   },
 
   // ── Timeline Actions ──
@@ -1071,6 +1263,81 @@ function createStore() {
     return [clipA, clipB];
   },
 
+  freezeFrame: (clipId, atTime, duration = 2.0) => {
+    const state = get();
+    let clip: Clip | null = null;
+    let trackId: string | null = null;
+
+    for (const track of state.project.tracks) {
+      const found = track.clips.find((c) => c.id === clipId);
+      if (found) { clip = found; trackId = track.id; break; }
+    }
+    if (!clip || !trackId) return null;
+
+    const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
+    if (atTime <= clip.timelineStart + 0.01 || atTime >= clipEnd - 0.01) return null;
+
+    const splitOffset = atTime - clip.timelineStart;
+    const freezeSourceTime = clip.sourceStart + splitOffset;
+
+    const freezeClip: Clip = {
+      id: uuid(),
+      type: clip.type,
+      sourceFileId: clip.sourceFileId,
+      sourceStart: freezeSourceTime,
+      sourceEnd: freezeSourceTime + 0.001,
+      timelineStart: atTime,
+      linkId: clip.linkId,
+      transform: { ...clip.transform, filters: { ...clip.transform.filters } },
+      effects: clip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
+      provenance: {},
+      transitions: [],
+    };
+
+    const tailClip: Clip = {
+      ...clip,
+      id: uuid(),
+      sourceStart: freezeSourceTime,
+      timelineStart: atTime + duration,
+      linkId: clip.linkId,
+      effects: clip.effects.map((e) => ({ ...e, parameters: { ...e.parameters }, keyframes: [...e.keyframes] })),
+      provenance: {},
+    };
+
+    const headClip: Clip = {
+      ...clip,
+      sourceEnd: freezeSourceTime,
+    };
+
+    set((state) => {
+      const newTracks = state.project.tracks.map((track) => {
+        if (track.id !== trackId) return track;
+        const newClips: Clip[] = [];
+        for (const c of track.clips) {
+          if (c.id === clipId) {
+            newClips.push(headClip, freezeClip, tailClip);
+          } else if (c.timelineStart >= atTime && c.id !== clipId) {
+            newClips.push({ ...c, timelineStart: c.timelineStart + duration });
+          } else {
+            newClips.push(c);
+          }
+        }
+        return { ...track, clips: newClips };
+      });
+      const dur = calculateDuration(newTracks);
+      return {
+        project: {
+          ...state.project,
+          tracks: newTracks,
+          composition: { ...state.project.composition, duration: dur },
+          updatedAt: Date.now(),
+        },
+      };
+    });
+
+    return freezeClip;
+  },
+
   addTrack: (type, label) => {
     // capture previous snapshot for undo
     const prevTracks = structuredClone(get().project.tracks);
@@ -1295,10 +1562,23 @@ function createStore() {
     set((state) => ({ ui: { ...state.ui, activePanel: panel } }));
   },
 
-  setSelectedClip: (clipId) => {
+  togglePanel: (panel: EditorPanel) => {
     set((state) => ({
-      ui: { ...state.ui, selectedClipIds: clipId ? [clipId] : [] },
+      ui: {
+        ...state.ui,
+        activePanel: state.ui.activePanel === panel ? null : panel,
+      },
     }));
+  },
+
+  setSelectedClip: (clipId) => {
+    set((state) => {
+      const newUi = { ...state.ui, selectedClipIds: clipId ? [clipId] : [] };
+      if (clipId && state.ui.activePanel !== 'effects') {
+        newUi.activePanel = 'effects';
+      }
+      return { ui: newUi };
+    });
   },
 
   toggleClipSelection: (clipId) => {
@@ -1312,10 +1592,165 @@ function createStore() {
     });
   },
 
-  toggleChat: () => {
+  // ── Provenance Actions ──
+
+  setProvenance: (clipId, path, entry) => {
     set((state) => ({
-      ui: { ...state.ui, isChatOpen: !state.ui.isChatOpen },
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) =>
+            clip.id === clipId
+              ? { ...clip, provenance: { ...clip.provenance, [path]: entry } }
+              : clip
+          ),
+        })),
+      },
     }));
+  },
+
+  clearPropertyProvenance: (clipId, path) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            const { [path]: _, ...rest } = clip.provenance;
+            return { ...clip, provenance: rest };
+          }),
+        })),
+      },
+    }));
+  },
+
+  acceptAIChange: (clipId, path) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId || !clip.provenance[path]) return clip;
+            return {
+              ...clip,
+              provenance: {
+                ...clip.provenance,
+                [path]: { ...clip.provenance[path], accepted: true },
+              },
+            };
+          }),
+        })),
+      },
+    }));
+  },
+
+  revertAIChange: (clipId, path) => {
+    const state = get();
+    let targetClip: Clip | undefined;
+    for (const track of state.project.tracks) {
+      targetClip = track.clips.find((c) => c.id === clipId);
+      if (targetClip) break;
+    }
+    if (!targetClip) return;
+
+    const entry = targetClip.provenance[path];
+    if (!entry || entry.source === 'user') return;
+
+    const prevVal = entry.previousValue;
+
+    set((s) => ({
+      project: {
+        ...s.project,
+        tracks: s.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            const { [path]: _, ...restProv } = clip.provenance;
+            const updated = { ...clip, provenance: restProv };
+
+            if (path.startsWith('effect:')) {
+              // Effect paths: "effect:<appliedId>" (new effect) or "effect:<appliedId>.<paramId>" (param change)
+              const rest = path.slice(7); // strip "effect:"
+              const dotIdx = rest.indexOf('.');
+              if (dotIdx >= 0) {
+                // Parameter change — revert the parameter value
+                const appliedEffectId = rest.slice(0, dotIdx);
+                const paramId = rest.slice(dotIdx + 1);
+                updated.effects = clip.effects.map((e) =>
+                  e.id === appliedEffectId
+                    ? { ...e, parameters: { ...e.parameters, [paramId]: prevVal as number } }
+                    : e
+                );
+              } else {
+                // New effect was added by AI — remove it entirely
+                const appliedEffectId = rest;
+                updated.effects = clip.effects.filter((e) => e.id !== appliedEffectId);
+              }
+              updated.transform = effectsToTransform(updated.effects);
+            } else {
+              const parts = path.split('.');
+              if (parts[0] === 'transform' && parts.length === 2) {
+                const key = parts[1] as keyof Transform;
+                updated.transform = { ...clip.transform, [key]: prevVal };
+                updated.effects = syncEffectsFromTransform(clip.effects, updated.transform);
+              } else if (parts[0] === 'transform' && parts[1] === 'filters' && parts.length === 3) {
+                const filterKey = parts[2] as keyof FilterState;
+                updated.transform = {
+                  ...clip.transform,
+                  filters: { ...clip.transform.filters, [filterKey]: prevVal },
+                };
+                updated.effects = syncEffectsFromTransform(clip.effects, updated.transform);
+              }
+            }
+
+            return updated;
+          }),
+        })),
+        updatedAt: Date.now(),
+      },
+    }));
+  },
+
+  acceptAllAIChanges: (clipId) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) => {
+            if (clip.id !== clipId) return clip;
+            const newProv = { ...clip.provenance };
+            for (const key of Object.keys(newProv)) {
+              if (newProv[key].source === 'ai' || newProv[key].source === 'ai-suggested') {
+                newProv[key] = { ...newProv[key], accepted: true };
+              }
+            }
+            return { ...clip, provenance: newProv };
+          }),
+        })),
+      },
+    }));
+  },
+
+  revertAllAIChanges: (clipId) => {
+    const state = get();
+    let targetClip: Clip | undefined;
+    for (const track of state.project.tracks) {
+      targetClip = track.clips.find((c) => c.id === clipId);
+      if (targetClip) break;
+    }
+    if (!targetClip) return;
+
+    const aiPaths = Object.entries(targetClip.provenance)
+      .filter(([, e]) => e.source === 'ai' || e.source === 'ai-suggested')
+      .map(([p]) => p);
+
+    for (const p of aiPaths) {
+      get().revertAIChange(clipId, p);
+    }
   },
 
   // ── Undo/Redo ──

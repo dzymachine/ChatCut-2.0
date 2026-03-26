@@ -49,6 +49,7 @@
 
 import { useEditorStore, type EditorStore } from '@/lib/store/editor-store';
 import type { Transform, FilterState, Clip, Track } from '@/types/editor';
+import { effectsToTransformAtTime, hasAnyKeyframes } from '@/lib/effects/keyframe-transform';
 
 /**
  * Manages a pool of <video> elements — one per concurrently-visible source file.
@@ -689,7 +690,10 @@ export class VideoEngine {
         if (!videoElement || videoElement.readyState < 2) continue;
         if (videoElement.videoWidth === 0 || videoElement.videoHeight === 0) continue;
 
-        const { transform } = clip;
+        const clipTime = state.playback.currentTime - clip.timelineStart;
+        const transform = hasAnyKeyframes(clip.effects)
+          ? effectsToTransformAtTime(clip.effects, clipTime)
+          : clip.transform;
 
         ctx.save();
         ctx.globalAlpha = transform.opacity;

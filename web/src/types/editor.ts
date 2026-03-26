@@ -70,6 +70,27 @@ export interface Track {
   solo: boolean;
 }
 
+// ─── AI Provenance ──────────────────────────────────────────────────────────
+
+export type ProvenanceSource = 'ai' | 'user' | 'ai-suggested';
+
+export interface ProvenanceEntry {
+  source: ProvenanceSource;
+  previousValue: number | string | boolean | null;
+  timestamp: number;
+  aiReason?: string;
+  accepted: boolean;
+}
+
+/**
+ * Maps property paths to provenance entries.
+ * Property paths use dot notation: "transform.scale", "transform.filters.blur",
+ * or effect paths: "effect:<effectId>.<paramId>"
+ */
+export type ClipProvenance = Record<string, ProvenanceEntry>;
+
+// ─── Clip ───────────────────────────────────────────────────────────────────
+
 export interface Clip {
   id: string;
   type: ClipType;
@@ -97,6 +118,9 @@ export interface Clip {
   // Each entry references an EffectDescriptor from the registry.
   // Effects are applied in order (first to last).
   effects: import('./effects').AppliedEffect[];
+
+  // AI provenance — tracks which properties were set by AI vs user
+  provenance: ClipProvenance;
 
   // Future: per-clip transitions, keyframes
   transitions: Transition[];
@@ -317,14 +341,14 @@ export interface ProjectSnapshot {
 
 // ─── UI State ───────────────────────────────────────────────────────────────
 
-export type EditorPanel = 'chat' | 'properties' | 'media';
+export type EditorPanel = 'chat' | 'effects' | 'media';
 
 export interface UIState {
-  activePanel: EditorPanel;
+  /** Which right-sidebar panel is visible, or null if sidebar is collapsed. */
+  activePanel: EditorPanel | null;
   /** Ordered list of selected clip IDs. First element is the primary (most recently clicked). */
   selectedClipIds: string[];
   selectedTrackId: string | null;
-  isChatOpen: boolean;
   isDragging: boolean;
   zoomLevel: number;
   /** When true, clicking a linked clip selects/moves/edits all clips in its link group. */
@@ -335,7 +359,6 @@ export const DEFAULT_UI_STATE: UIState = {
   activePanel: 'chat',
   selectedClipIds: [],
   selectedTrackId: null,
-  isChatOpen: true,
   isDragging: false,
   zoomLevel: 1.0,
   linkedSelectionEnabled: true,
