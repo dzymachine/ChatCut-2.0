@@ -3,17 +3,19 @@
 import { VideoPreview } from "@/components/editor/VideoPreview";
 import { VideoLibrary } from "@/components/editor/VideoLibrary";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { EditHistoryPanel } from "@/components/history/EditHistoryPanel";
 import { Timeline } from "@/components/editor/timeline/Timeline";
 import { ExportDialog } from "@/components/editor/export/ExportDialog";
+import { ProviderPicker } from "@/components/settings/ProviderPicker";
+import { ApiKeySetting } from "@/components/settings/ApiKeySetting";
 import { useEditorStore } from "@/lib/store/editor-store";
 import { useTauriStatus } from "@/hooks/useTauriStatus";
 import { saveProject, loadProject, startAutoSave, stopAutoSave } from "@/lib/project/serializer";
 import { useCallback, useEffect, useState } from "react";
 import { showToast } from "@/components/ui/toast-notification";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 export default function EditorPage() {
-  const isChatOpen = useEditorStore((s) => s.ui.isChatOpen);
-  const toggleChat = useEditorStore((s) => s.toggleChat);
   const canUndo = useEditorStore((s) => s.undoStack.length > 0);
   const canRedo = useEditorStore((s) => s.redoStack.length > 0);
   const undo = useEditorStore((s) => s.undo);
@@ -21,14 +23,13 @@ export default function EditorPage() {
   const [, setEngineReady] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
-  const [isLibraryOpen, setIsLibraryOpen] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const tauriStatus = useTauriStatus();
 
   const handleEngineReady = useCallback(() => {
     setEngineReady(true);
   }, []);
 
-  // Save project handler
   const handleSave = useCallback(async () => {
     try {
       setSaveStatus("saving");
@@ -46,7 +47,6 @@ export default function EditorPage() {
     }
   }, []);
 
-  // Load project handler
   const handleLoad = useCallback(async () => {
     try {
       await loadProject();
@@ -56,7 +56,6 @@ export default function EditorPage() {
     }
   }, []);
 
-  // Keyboard shortcuts for undo/redo and save
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (
@@ -73,27 +72,21 @@ export default function EditorPage() {
           useEditorStore.getState().undo();
         }
       }
-
-      // Cmd+S / Ctrl+S — save project
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
         handleSave();
       }
-
-      // Cmd+O / Ctrl+O — open project
       if ((e.metaKey || e.ctrlKey) && e.key === "o") {
         e.preventDefault();
         handleLoad();
       }
     };
-
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [handleSave, handleLoad]);
 
-  // Start auto-save on mount
   useEffect(() => {
-    startAutoSave(60_000); // Auto-save every 60 seconds
+    startAutoSave(60_000);
     return () => stopAutoSave();
   }, []);
 
@@ -102,191 +95,105 @@ export default function EditorPage() {
       {/* Top Bar */}
       <header className="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-800 shrink-0">
         <div className="flex items-center gap-3">
-          <h1 className="text-sm font-bold text-white tracking-tight">
-            ChatCut
-          </h1>
-          <button
-            onClick={() => setIsLibraryOpen((open) => !open)}
-            className={`p-1.5 rounded transition-colors ${
-              isLibraryOpen
-                ? "text-blue-400 bg-blue-500/10"
-                : "text-neutral-400 hover:text-white hover:bg-neutral-800"
-            }`}
-            title="Toggle Library"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M4 19h16V5H4v14zm2-2V7h12v10H6z" />
-              <path d="M8 7v10" />
-            </svg>
-          </button>
-          <span className="text-xs text-neutral-600">|</span>
-          <span className="text-xs text-neutral-500">AI Video Editor</span>
+          <h1 className="text-sm font-bold text-white tracking-tight">ChatCut</h1>
           {tauriStatus.isDesktop && (
-            <>
-              <span className="text-xs text-neutral-700">|</span>
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-[10px] font-medium">
-                Desktop
-              </span>
-              {tauriStatus.ffmpeg !== null && (
-                <span
-                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                    tauriStatus.ffmpeg.available
-                      ? "bg-emerald-500/10 text-emerald-400"
-                      : "bg-amber-500/10 text-amber-400"
-                  }`}
-                  title={tauriStatus.ffmpeg.available ? tauriStatus.ffmpeg.version : "FFmpeg not found — export disabled"}
-                >
-                  FFmpeg {tauriStatus.ffmpeg.available ? "✓" : "✗"}
-                </span>
-              )}
-            </>
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-[10px] font-medium">
+              Desktop
+            </span>
           )}
         </div>
 
         <div className="flex items-center gap-2">
-          {/* File Operations */}
-          <button
-            onClick={handleLoad}
-            className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
-            title="Open Project (Cmd+O)"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" />
-            </svg>
+          <button onClick={handleLoad} className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors" title="Open Project (Cmd+O)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" /></svg>
           </button>
-          <button
-            onClick={handleSave}
-            className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
-            title="Save Project (Cmd+S)"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
-              <polyline points="17 21 17 13 7 13 7 21" />
-              <polyline points="7 3 7 8 15 8" />
-            </svg>
+          <button onClick={handleSave} className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors" title="Save Project (Cmd+S)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg>
           </button>
-          {saveStatus === "saving" && (
-            <span className="text-[10px] text-neutral-500">Saving...</span>
-          )}
-          {saveStatus === "saved" && (
-            <span className="text-[10px] text-emerald-400">Saved</span>
-          )}
-
+          {saveStatus === "saving" && <span className="text-[10px] text-neutral-500">Saving...</span>}
+          {saveStatus === "saved" && <span className="text-[10px] text-emerald-400">Saved</span>}
           <span className="text-xs text-neutral-700 mx-0.5">|</span>
-
-          {/* Export Button */}
-          <button
-            onClick={() => setIsExportOpen(true)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 transition-colors"
-            title="Export Video"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
+          <button onClick={() => setIsExportOpen(true)} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30 transition-colors" title="Export Video">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
             Export
           </button>
-
-          <span className="text-xs text-neutral-700 mx-1">|</span>
-
-          {/* Undo/Redo */}
-          <button
-            onClick={undo}
-            disabled={!canUndo}
-            className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            title="Undo (Cmd+Z)"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M3 7v6h6" />
-              <path d="M3 13a9 9 0 019-9 9 9 0 016.3 2.6L21 9" />
-            </svg>
+          <span className="text-xs text-neutral-700 mx-0.5">|</span>
+          <button onClick={undo} disabled={!canUndo} className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Undo (Cmd+Z)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7v6h6" /><path d="M3 13a9 9 0 019-9 9 9 0 016.3 2.6L21 9" /></svg>
           </button>
-          <button
-            onClick={redo}
-            disabled={!canRedo}
-            className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            title="Redo (Cmd+Shift+Z)"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M21 7v6h-6" />
-              <path d="M21 13a9 9 0 00-9-9 9 9 0 00-6.3 2.6L3 9" />
-            </svg>
+          <button onClick={redo} disabled={!canRedo} className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors" title="Redo (Cmd+Shift+Z)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 7v6h-6" /><path d="M21 13a9 9 0 00-9-9 9 9 0 00-6.3 2.6L3 9" /></svg>
           </button>
-
-          <span className="text-xs text-neutral-700 mx-1">|</span>
-
-          <button
-            onClick={toggleChat}
-            className={`p-1.5 rounded transition-colors ${
-              isChatOpen
-                ? "text-blue-400 bg-blue-500/10"
-                : "text-neutral-400 hover:text-white hover:bg-neutral-800"
-            }`}
-            title="Toggle Chat Panel"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" />
-            </svg>
+          <span className="text-xs text-neutral-700 mx-0.5">|</span>
+          <button onClick={() => setIsSettingsOpen(true)} className="p-1.5 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors" title="AI Settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" /></svg>
           </button>
         </div>
       </header>
 
-      {/* Main Editor Area — video library + preview + optional chat panel */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Left Library Panel */}
-        {isLibraryOpen && (
-          <div className="w-[280px] shrink-0 border-r border-neutral-800 bg-neutral-950">
-            <VideoLibrary />
-          </div>
-        )}
+      {/* Main resizable layout: top (preview + panels) / bottom (timeline) */}
+      <PanelGroup direction="vertical" id="outer" className="flex-1 min-h-0">
+        {/* Top section: library | preview + chat | history */}
+        <Panel defaultSize={65} minSize={25}>
+          <PanelGroup direction="horizontal" id="top" className="h-full">
+            {/* Library — 20% default, can collapse */}
+            <Panel defaultSize={20} minSize={5} maxSize={40} collapsible collapsedSize={4}>
+              <div className="h-full border-r border-neutral-800 bg-neutral-950 overflow-auto">
+                <VideoLibrary />
+              </div>
+            </Panel>
+            <PanelResizeHandle className="w-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-col-resize" />
 
-        {/* Video Preview — takes remaining space */}
-        <div className="flex-1 flex flex-col min-w-0">
-          <VideoPreview onEngineReady={handleEngineReady} />
-        </div>
+            {/* Center: Preview + Chat stacked — 55% */}
+            <Panel defaultSize={55} minSize={20}>
+              <PanelGroup direction="vertical" id="center" className="h-full">
+                <Panel defaultSize={55} minSize={15}>
+                  <VideoPreview onEngineReady={handleEngineReady} />
+                </Panel>
+                <PanelResizeHandle className="h-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-row-resize" />
+                <Panel defaultSize={45} minSize={10}>
+                  <ChatPanel />
+                </Panel>
+              </PanelGroup>
+            </Panel>
+            <PanelResizeHandle className="w-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-col-resize" />
 
-        {/* Chat Panel — fixed width sidebar */}
-        {isChatOpen && (
-          <div className="w-[360px] shrink-0">
-            <ChatPanel />
-          </div>
-        )}
-      </div>
+            {/* Edit History — 25% default, can collapse */}
+            <Panel defaultSize={25} minSize={5} maxSize={40} collapsible collapsedSize={0}>
+              <div className="h-full border-l border-neutral-800 overflow-auto">
+                <EditHistoryPanel />
+              </div>
+            </Panel>
+          </PanelGroup>
+        </Panel>
 
-      {/* Timeline Panel — full width at bottom, resizable */}
-      <Timeline />
+        <PanelResizeHandle className="h-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-row-resize" />
+
+        {/* Timeline — 35% default, generous range */}
+        <Panel defaultSize={35} minSize={10} maxSize={70}>
+          <Timeline />
+        </Panel>
+      </PanelGroup>
 
       {/* Export Dialog */}
       <ExportDialog isOpen={isExportOpen} onClose={() => setIsExportOpen(false)} />
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setIsSettingsOpen(false)} />
+          <div className="relative bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl w-[360px] p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-neutral-200">AI Settings</h3>
+              <button onClick={() => setIsSettingsOpen(false)} className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+            <ProviderPicker />
+            <ApiKeySetting />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

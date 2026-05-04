@@ -1,0 +1,169 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "get_timeline_state",
+      "type": "introspection",
+      "description": "Get the full timeline state including all tracks, clips, and composition settings.",
+      "parameters": {}
+    },
+    {
+      "name": "get_media_library",
+      "type": "introspection",
+      "description": "Get all imported media files available for use on the timeline.",
+      "parameters": {}
+    },
+    {
+      "name": "get_clip_at_time",
+      "type": "introspection",
+      "description": "Get the clip at a specific playhead time position.",
+      "parameters": {
+        "time": {
+          "type": "number",
+          "description": "Time position in seconds to query.",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "get_selected_clip",
+      "type": "introspection",
+      "description": "Get the currently selected/active clip and its properties.",
+      "parameters": {}
+    },
+    {
+      "name": "add_clip",
+      "type": "mutation",
+      "description": "Add a media file to the timeline at a specific position.",
+      "parameters": {
+        "media_file_id": {
+          "type": "string",
+          "description": "ID of the media file from the library to add.",
+          "required": true
+        },
+        "track_id": {
+          "type": "string",
+          "description": "Target track ID. If omitted, adds to the first video track (V1)."
+        },
+        "timeline_start": {
+          "type": "number",
+          "description": "Start time on the timeline in seconds. Defaults to 0."
+        }
+      }
+    },
+    {
+      "name": "remove_clip",
+      "type": "mutation",
+      "description": "Remove a clip from the timeline by its ID.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to remove. If omitted, removes the currently selected clip."
+        }
+      }
+    },
+    {
+      "name": "trim_clip",
+      "type": "mutation",
+      "description": "Trim a clip's source start or end point. Adjusts which portion of the source media is shown.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to trim. If omitted, uses the currently selected clip."
+        },
+        "source_start": {
+          "type": "number",
+          "description": "New source start time in seconds. Trims from the beginning."
+        },
+        "source_end": {
+          "type": "number",
+          "description": "New source end time in seconds. Trims from the end."
+        }
+      }
+    },
+    {
+      "name": "move_clip",
+      "type": "mutation",
+      "description": "Move a clip to a new position on the timeline, optionally to a different track.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to move. If omitted, uses the currently selected clip."
+        },
+        "timeline_start": {
+          "type": "number",
+          "description": "New start time on the timeline in seconds.",
+          "required": true
+        },
+        "track_id": {
+          "type": "string",
+          "description": "Target track ID. If omitted, stays on the current track."
+        }
+      }
+    },
+    {
+      "name": "apply_effect",
+      "type": "mutation",
+      "description": "Apply a visual or audio effect to a clip.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to apply the effect to. If omitted, uses the currently selected clip."
+        },
+        "effect_id": {
+          "type": "string",
+          "description": "Effect identifier from the registry.",
+          "required": true,
+          "enum": [
+            "scale",
+            "position",
+            "rotation",
+            "opacity",
+            "crop",
+            "brightness",
+            "contrast",
+            "saturation",
+            "exposure",
+            "color_temperature",
+            "hue_rotate",
+            "grayscale",
+            "gaussian_blur",
+            "sharpen",
+            "sepia",
+            "vignette",
+            "cross_dissolve",
+            "fade_out",
+            "fade_in",
+            "playback_speed"
+          ]
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Effect-specific parameters as key-value pairs. Keys correspond to the effect's parameter IDs."
+        }
+      }
+    },
+    {
+      "name": "update_effect_param",
+      "type": "mutation",
+      "description": "Update a parameter on an already-applied effect.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip. If omitted, uses the currently selected clip."
+        },
+        "applied_effect_id": {
+          "type": "string",
+          "description": "ID of the applied effect instance on the clip.",
+          "required": true
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Updated parameter values as key-value pairs.",
+          "required": true
+        }
+      }
+    }
+  ]
+}

@@ -57,6 +57,7 @@ import {
   DEFAULT_UI_STATE,
   DEFAULT_TIMELINE_STATE,
 } from '@/types/editor';
+import type { EditNode } from '@/lib/agent/types';
 import { createDefaultEffects, effectsToTransform } from '@/lib/effects/transform-bridge';
 
 // ─── Store Interface ────────────────────────────────────────────────────────
@@ -85,6 +86,9 @@ export interface EditorStore {
   undoStack: Command[];
   redoStack: Command[];
   _undoBatch: { description: string; snapshotTracks: Track[]; snapshotPlayback: PlaybackState } | null;
+
+  // ── Edit History (Agent) ──
+  editHistory: EditNode[];
 
   // ── Project Actions ──
   initProject: (name: string, width: number, height: number, fps: number) => void;
@@ -156,6 +160,11 @@ export interface EditorStore {
   beginUndoBatch: (description: string) => void;
   commitUndoBatch: () => void;
   cancelUndoBatch: () => void;
+
+  // ── Edit History (Agent) ──
+  appendEditNode: (node: Omit<EditNode, 'id' | 'createdAt' | 'parentId'>) => string;
+  rollbackToNode: (nodeId: string) => void;
+  updateEditNodeSummary: (nodeId: string, summary: string) => void;
 
   // ── Helpers ──
   getActiveClip: () => Clip | null;
@@ -240,6 +249,7 @@ function createStore() {
   undoStack: [],
   redoStack: [],
   _undoBatch: null,
+  editHistory: [],
 
   // ── Project Actions ──
 
@@ -1590,6 +1600,66 @@ function createStore() {
     set({ _undoBatch: null });
   },
 
+  // ── Edit History (Agent) ──
+
+  appendEditNode: (node) => {
+    const id = uuid();
+    const state = get();
+    const parentId = state.editHistory.length > 0
+      ? state.editHistory[state.editHistory.length - 1].id
+      : null;
+    const fullNode: EditNode = {
+      ...node,
+      id,
+      parentId,
+      createdAt: Date.now(),
+    };
+    set((s) => ({
+      editHistory: [...s.editHistory, fullNode],
+    }));
+    return id;
+  },
+
+  rollbackToNode: (nodeId) => {
+    const state = get();
+    const nodeIndex = state.editHistory.findIndex((n) => n.id === nodeId);
+    if (nodeIndex === -1) return;
+
+    const node = state.editHistory[nodeIndex];
+    const command = state.undoStack[node.snapshotIndex];
+    if (!command) return;
+
+    // Restore the state AFTER this edit was applied (nextState).
+    const updates: Partial<EditorStore> = {};
+    if (command.nextState.tracks) {
+      updates.project = {
+        ...state.project,
+        tracks: command.nextState.tracks,
+        composition: {
+          ...state.project.composition,
+          duration: calculateDuration(command.nextState.tracks),
+        },
+      };
+    }
+    if (command.nextState.playback) {
+      updates.playback = command.nextState.playback;
+    }
+
+    // Truncate editHistory to include only nodes up to and including this one
+    set({
+      ...updates,
+      editHistory: state.editHistory.slice(0, nodeIndex + 1),
+    });
+  },
+
+  updateEditNodeSummary: (nodeId, summary) => {
+    set((state) => ({
+      editHistory: state.editHistory.map((node) =>
+        node.id === nodeId ? { ...node, summary } : node
+      ),
+    }));
+  },
+
   // ── Helpers ──
 
   getActiveClip: () => {
@@ -1659,7 +1729,8 @@ function isStoreShapeValid(store: ReturnType<typeof createStore>): boolean {
       typeof s.timeline === 'object' &&
       typeof s.timeline?.pixelsPerSecond === 'number' &&
       typeof s.setSelectedClip === 'function' &&
-      typeof s.toggleClipSelection === 'function'
+      typeof s.toggleClipSelection === 'function' &&
+      Array.isArray(s.editHistory)
     );
   } catch {
     return false;

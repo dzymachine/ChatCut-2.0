@@ -76,3 +76,5 @@ plugin/status.md
 *.zip
 *.pdf
 nul
+
+**/.DS_Store
