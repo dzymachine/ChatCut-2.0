@@ -43,7 +43,7 @@ import {
   type MediaFile,
   type PlaybackState,
   type ChatMessage,
-  type ChatMode,
+
   type UIState,
   type TimelineState,
   type TimelineTool,
@@ -72,9 +72,7 @@ export interface EditorStore {
 
   // ── Chat ──
   chatMessages: ChatMessage[];
-  chatConversations: Record<ChatMode, ChatMessage[]>;
   isChatLoading: boolean;
-  chatMode: ChatMode;
 
   // ── UI ──
   ui: UIState;
@@ -142,7 +140,6 @@ export interface EditorStore {
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => string;
   updateChatMessage: (id: string, updates: Partial<ChatMessage>) => void;
   setChatLoading: (loading: boolean) => void;
-  setChatMode: (mode: ChatMode) => void;
   clearChat: () => void;
 
   // ── UI Actions ──
@@ -238,12 +235,7 @@ function createStore() {
   mediaFiles: new Map(),
   playback: { ...DEFAULT_PLAYBACK },
   chatMessages: [],
-  chatConversations: {
-    effects: [],
-    generation: [],
-  },
   isChatLoading: false,
-  chatMode: 'effects',
   ui: { ...DEFAULT_UI_STATE },
   timeline: { ...DEFAULT_TIMELINE_STATE },
   undoStack: [],
@@ -261,10 +253,6 @@ function createStore() {
         composition: { width, height, fps, duration: 0 },
       },
       chatMessages: [],
-      chatConversations: {
-        effects: [],
-        generation: [],
-      },
       undoStack: [],
       redoStack: [],
     });
@@ -1394,30 +1382,18 @@ function createStore() {
 
   addChatMessage: (message) => {
     const id = uuid();
-    const currentMode = get().chatMode;
     const newMessage = { ...message, id, timestamp: Date.now() };
     set((state) => ({
       chatMessages: [...state.chatMessages, newMessage],
-      chatConversations: {
-        ...state.chatConversations,
-        [currentMode]: [...state.chatConversations[currentMode], newMessage],
-      },
     }));
     return id;
   },
 
   updateChatMessage: (id, updates) => {
-    const currentMode = get().chatMode;
     set((state) => ({
       chatMessages: state.chatMessages.map((msg) =>
         msg.id === id ? { ...msg, ...updates } : msg
       ),
-      chatConversations: {
-        ...state.chatConversations,
-        [currentMode]: state.chatConversations[currentMode].map((msg) =>
-          msg.id === id ? { ...msg, ...updates } : msg
-        ),
-      },
     }));
   },
 
@@ -1425,22 +1401,8 @@ function createStore() {
     set({ isChatLoading: loading });
   },
 
-  setChatMode: (mode) => {
-    set((state) => ({
-      chatMode: mode,
-      chatMessages: state.chatConversations[mode],
-    }));
-  },
-
   clearChat: () => {
-    const currentMode = get().chatMode;
-    set((state) => ({
-      chatMessages: [],
-      chatConversations: {
-        ...state.chatConversations,
-        [currentMode]: [],
-      },
-    }));
+    set({ chatMessages: [] });
   },
 
   // ── UI Actions ──

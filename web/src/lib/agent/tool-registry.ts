@@ -15,6 +15,7 @@
 import { TOOLS } from '../../../src-shared/tools';
 import { useEditorStore } from '@/lib/store/editor-store';
 import { getEffectDescriptor } from '@/lib/effects/registry';
+import { summarizeEditNode } from './summarize';
 import type { ToolCall, ToolResult } from './types';
 
 // ─── Tool Execution ────────────────────────────────────────────────────────────
@@ -75,6 +76,9 @@ export function executeToolWithHistory(call: ToolCall): ToolResult & { editNodeI
     args: call.arguments,
     snapshotIndex,
   });
+
+  // Fire-and-forget Haiku summary (non-blocking)
+  summarizeEditNode(editNodeId, call.name, call.arguments);
 
   return { ...result, editNodeId };
 }

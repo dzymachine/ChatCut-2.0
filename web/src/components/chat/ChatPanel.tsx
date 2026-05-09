@@ -10,6 +10,7 @@ import { EmptyState } from "./EmptyState";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { showToast } from "@/components/ui/toast-notification";
 
 interface ToolCallInfo {
   toolName: string;
@@ -119,7 +120,9 @@ export function ChatPanel() {
 
               case "tool_result":
                 if (delta.toolName && delta.toolResult) {
-                  // Update the last tool call with its result
+                  if (!delta.toolResult.success) {
+                    showToast("error", `${delta.toolName}: ${delta.toolResult.error || "failed"}`);
+                  }
                   const lastIdx = msgToolCalls.length - 1;
                   if (lastIdx >= 0 && msgToolCalls[lastIdx].toolName === delta.toolName) {
                     msgToolCalls[lastIdx].result = delta.toolResult;
@@ -234,6 +237,7 @@ export function ChatPanel() {
         className="flex items-center gap-2 p-3 border-t border-neutral-800"
       >
         <Input
+          data-chat-input
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           placeholder="Describe what to edit..."

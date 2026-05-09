@@ -80,6 +80,12 @@ export default function EditorPage() {
         e.preventDefault();
         handleLoad();
       }
+      // "/" focuses the chat input from anywhere
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        const chatInput = document.querySelector<HTMLInputElement>('[data-chat-input]');
+        chatInput?.focus();
+      }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
