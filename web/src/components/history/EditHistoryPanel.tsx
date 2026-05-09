@@ -2,6 +2,7 @@
 
 import { useEditorStore } from '@/lib/store/editor-store';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Eye, EyeOff, Trash2 } from 'lucide-react';
 
 function formatRelativeTime(timestamp: number): string {
   const now = Date.now();
@@ -63,9 +64,13 @@ function formatArgs(toolName: string, args: Record<string, unknown>): string | n
   }
 }
 
+const EFFECT_TOOLS = new Set(['apply_effect', 'update_effect_param']);
+
 export function EditHistoryPanel() {
   const editHistory = useEditorStore((s) => s.editHistory);
   const rollbackToNode = useEditorStore((s) => s.rollbackToNode);
+  const toggleEditNode = useEditorStore((s) => s.toggleEditNode);
+  const deleteEditNode = useEditorStore((s) => s.deleteEditNode);
 
   const reversedHistory = [...editHistory].reverse();
 
@@ -95,23 +100,29 @@ export function EditHistoryPanel() {
       <ScrollArea className="flex-1">
         <div className="p-2 space-y-1">
           {reversedHistory.map((node, index) => {
-            const isLatest = index === 0;
+            const isLatest = index === 0 && !node.disabled;
             const detail = formatArgs(node.toolName, node.args);
+            const isEffectNode = EFFECT_TOOLS.has(node.toolName) && !!node.appliedEffectId;
+            const isDisabled = node.disabled === true;
+            const isCascadeDisabled = !!node.cascadeDisabledBy;
+
             return (
               <div
                 key={node.id}
                 className={`group flex items-start justify-between gap-2 px-3 py-2 rounded-md transition-colors ${
-                  isLatest
-                    ? 'bg-neutral-800/70 border border-neutral-700'
-                    : 'hover:bg-neutral-800/50'
+                  isDisabled
+                    ? 'opacity-50'
+                    : isLatest
+                      ? 'bg-neutral-800/70 border border-neutral-700'
+                      : 'hover:bg-neutral-800/50'
                 }`}
               >
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-neutral-200 truncate">
+                  <p className={`text-sm truncate ${isDisabled ? 'text-neutral-500 line-through' : 'text-neutral-200'}`}>
                     {node.summary || formatToolName(node.toolName)}
                   </p>
                   {detail && (
-                    <p className="text-xs text-blue-400/80 font-mono truncate mt-0.5">
+                    <p className={`text-xs font-mono truncate mt-0.5 ${isDisabled ? 'text-neutral-600' : 'text-blue-400/80'}`}>
                       {detail}
                     </p>
                   )}
@@ -119,19 +130,46 @@ export function EditHistoryPanel() {
                     {formatRelativeTime(node.createdAt)}
                   </p>
                 </div>
-                {!isLatest && (
-                  <button
-                    onClick={() => rollbackToNode(node.id)}
-                    className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 text-xs font-medium text-neutral-300 bg-neutral-700 hover:bg-neutral-600 rounded mt-0.5"
-                  >
-                    Rollback
-                  </button>
-                )}
-                {isLatest && (
-                  <span className="shrink-0 px-2 py-0.5 text-xs font-medium text-green-400 bg-green-900/30 rounded mt-0.5">
-                    Current
-                  </span>
-                )}
+
+                <div className="shrink-0 flex items-center gap-1 mt-0.5">
+                  {isEffectNode && !isCascadeDisabled && (
+                    <>
+                      <button
+                        onClick={() => toggleEditNode(node.id)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-neutral-700"
+                        title={isDisabled ? 'Enable effect' : 'Disable effect'}
+                      >
+                        {isDisabled ? (
+                          <EyeOff className="size-3.5 text-neutral-400" />
+                        ) : (
+                          <Eye className="size-3.5 text-neutral-300" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => deleteEditNode(node.id)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-900/50"
+                        title="Delete effect"
+                      >
+                        <Trash2 className="size-3.5 text-neutral-400 hover:text-red-400" />
+                      </button>
+                    </>
+                  )}
+
+                  {!isLatest && !isEffectNode && (
+                    <button
+                      onClick={() => rollbackToNode(node.id)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 text-xs font-medium text-neutral-300 bg-neutral-700 hover:bg-neutral-600 rounded"
+                    >
+                      Rollback
+                    </button>
+                  )}
+
+                  {isLatest && (
+                    <span className="px-2 py-0.5 text-xs font-medium text-green-400 bg-green-900/30 rounded">
+                      Current
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })}

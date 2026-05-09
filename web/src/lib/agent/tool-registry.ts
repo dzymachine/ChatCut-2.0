@@ -70,10 +70,27 @@ export function executeToolWithHistory(call: ToolCall): ToolResult & { editNodeI
   const snapshotIndex = afterLen - 1;
   const store = useEditorStore.getState();
 
+  // Extract effect identifiers so EditNode can support per-effect toggle/delete
+  let appliedEffectId: string | undefined;
+  let targetClipId: string | undefined;
+
+  if (call.name === 'apply_effect' && result.data) {
+    const applied = result.data as { id?: string; clipId?: string };
+    appliedEffectId = applied.id;
+    targetClipId = (call.arguments.clip_id as string | undefined)
+      ?? store.getActiveClip()?.id;
+  } else if (call.name === 'update_effect_param' && result.data) {
+    const data = result.data as { clipId?: string; appliedEffectId?: string };
+    appliedEffectId = data.appliedEffectId;
+    targetClipId = data.clipId;
+  }
+
   const editNodeId = store.appendEditNode({
     toolName: call.name,
     args: call.arguments,
     snapshotIndex,
+    ...(appliedEffectId && { appliedEffectId }),
+    ...(targetClipId && { targetClipId }),
   });
 
   return { ...result, editNodeId };

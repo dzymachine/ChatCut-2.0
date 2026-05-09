@@ -38,4 +38,12 @@ export interface EditNode {
   /** Index into the undoStack — the Command at this index is the one this edit pushed. */
   snapshotIndex: number;
   createdAt: number;
+  /** Whether this edit is currently disabled (effect toggled off). */
+  disabled?: boolean;
+  /** The AppliedEffect.id this node created or modified (for apply_effect / update_effect_param). */
+  appliedEffectId?: string;
+  /** The clip this effect targets. */
+  targetClipId?: string;
+  /** If cascade-disabled by a parent apply_effect node, stores that node's id. */
+  cascadeDisabledBy?: string;
 }
