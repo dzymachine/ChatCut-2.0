@@ -163,6 +163,8 @@ export interface EditorStore {
   appendEditNode: (node: Omit<EditNode, 'id' | 'createdAt' | 'parentId'>) => string;
   rollbackToNode: (nodeId: string) => void;
   updateEditNodeSummary: (nodeId: string, summary: string) => void;
+  toggleEditNode: (nodeId: string) => void;
+  deleteEditNode: (nodeId: string) => void;
 
   // ── Helpers ──
   getActiveClip: () => Clip | null;
@@ -1635,6 +1637,91 @@ function createStore() {
         node.id === nodeId ? { ...node, summary } : node
       ),
     }));
+  },
+
+  toggleEditNode: (nodeId) => {
+    const state = get();
+    const node = state.editHistory.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    const isEffectTool = node.toolName === 'apply_effect' || node.toolName === 'update_effect_param';
+    if (!isEffectTool || !node.appliedEffectId || !node.targetClipId) return;
+
+    const enabling = node.disabled === true;
+
+    get().beginUndoBatch(enabling ? 'Re-enable edit' : 'Disable edit');
+
+    if (node.toolName === 'apply_effect') {
+      get().toggleEffect(node.targetClipId, node.appliedEffectId, enabling);
+
+      // Cascade to all update_effect_param nodes for the same effect
+      set((s) => ({
+        editHistory: s.editHistory.map((n) => {
+          if (n.id === nodeId) {
+            return { ...n, disabled: !enabling, cascadeDisabledBy: undefined };
+          }
+          if (
+            n.toolName === 'update_effect_param' &&
+            n.appliedEffectId === node.appliedEffectId &&
+            n.targetClipId === node.targetClipId
+          ) {
+            if (!enabling) {
+              return { ...n, disabled: true, cascadeDisabledBy: nodeId };
+            }
+            if (n.cascadeDisabledBy === nodeId) {
+              return { ...n, disabled: false, cascadeDisabledBy: undefined };
+            }
+          }
+          return n;
+        }),
+      }));
+    } else {
+      // update_effect_param — toggle the effect's enabled state
+      get().toggleEffect(node.targetClipId, node.appliedEffectId, enabling);
+      set((s) => ({
+        editHistory: s.editHistory.map((n) =>
+          n.id === nodeId ? { ...n, disabled: !enabling } : n
+        ),
+      }));
+    }
+
+    get().commitUndoBatch();
+  },
+
+  deleteEditNode: (nodeId) => {
+    const state = get();
+    const node = state.editHistory.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    const isEffectTool = node.toolName === 'apply_effect' || node.toolName === 'update_effect_param';
+    if (!isEffectTool || !node.appliedEffectId || !node.targetClipId) return;
+
+    get().beginUndoBatch('Delete edit');
+
+    if (node.toolName === 'apply_effect') {
+      get().removeEffect(node.targetClipId, node.appliedEffectId);
+
+      // Remove this node and all cascaded update_effect_param children
+      set((s) => ({
+        editHistory: s.editHistory.filter((n) => {
+          if (n.id === nodeId) return false;
+          if (
+            n.toolName === 'update_effect_param' &&
+            n.appliedEffectId === node.appliedEffectId &&
+            n.targetClipId === node.targetClipId
+          ) return false;
+          return true;
+        }),
+      }));
+    } else {
+      // update_effect_param — remove this specific parameter update
+      // Revert would require stored previous values; for now just remove the node
+      set((s) => ({
+        editHistory: s.editHistory.filter((n) => n.id !== nodeId),
+      }));
+    }
+
+    get().commitUndoBatch();
   },
 
   // ── Helpers ──
