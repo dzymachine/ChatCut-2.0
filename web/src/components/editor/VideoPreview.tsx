@@ -1,21 +1,41 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { useVideoEngine } from "@/hooks/useVideoEngine";
 import { useEditorStore, isVideoFile } from "@/lib/store/editor-store";
 import { TransportControls } from "./TransportControls";
 import { isTauri, openVideoFileDialog } from "@/lib/tauri/bridge";
 import { showToast } from "@/components/ui/toast-notification";
 
+const MediaController = dynamic(
+  () => import("media-chrome/react").then((m) => m.MediaController),
+  { ssr: false }
+);
+
+if (typeof window !== "undefined") {
+  import("@/components/editor/ChatCutMediaElement");
+}
+
 interface VideoPreviewProps {
   onEngineReady?: () => void;
 }
 
 export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
-  const { canvasRef, isReady, loadError, loadVideo, loadVideoFromPath, togglePlayback, seek } = useVideoEngine();
+  const {
+    canvasRef,
+    isReady,
+    loadError,
+    loadVideo,
+    loadVideoFromPath,
+    togglePlayback,
+    seek,
+  } = useVideoEngine();
   const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const hasClip = useEditorStore((s) => s.project.tracks.some((t) => t.clips.length > 0));
+  const hasClip = useEditorStore((s) =>
+    s.project.tracks.some((t) => t.clips.length > 0)
+  );
 
   useEffect(() => {
     if (isReady && onEngineReady) {
@@ -23,30 +43,38 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
     }
   }, [isReady, onEngineReady]);
 
-  // ── Tauri Drag & Drop Events ──
+  // ── Global keyboard shortcuts ──
   useEffect(() => {
-    if (!isTauri()) return;
-
-    let unlisteners: (() => void)[] = [];
-
-    const setupListeners = async () => {
-      // Note: Video preview drop handling is now done by the Timeline component
-      // to avoid duplicate clip creation. The timeline provides better control
-      // over clip placement (time and track positioning).
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          togglePlayback();
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          seek(useEditorStore.getState().playback.currentTime - 0.5);
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          seek(useEditorStore.getState().playback.currentTime + 0.5);
+          break;
+      }
     };
-
-    setupListeners();
-
-    return () => {
-      unlisteners.forEach(unlisten => unlisten());
-    };
-  }, [loadVideoFromPath]);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [togglePlayback, seek]);
 
   // ── Web Drag & Drop ──
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = 'copy';
+    e.dataTransfer.dropEffect = "copy";
     setIsDragOver(true);
   }, []);
 
@@ -66,7 +94,7 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       if (files.length === 0 && e.dataTransfer.items) {
         for (let i = 0; i < e.dataTransfer.items.length; i++) {
           const item = e.dataTransfer.items[i];
-          if (item.kind === 'file') {
+          if (item.kind === "file") {
             const f = item.getAsFile();
             if (f) files.push(f);
           }
@@ -80,7 +108,8 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
         await loadVideo(videoFile as File);
         showToast("success", "Video loaded successfully");
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Failed to load video";
+        const msg =
+          err instanceof Error ? err.message : "Failed to load video";
         console.error("[VideoPreview] Drop load error:", msg);
         showToast("error", msg);
       } finally {
@@ -92,17 +121,17 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
 
   // ── File Picker ──
   const handleFileSelect = useCallback(async () => {
-    // Use native Tauri file dialog when available — stores native path for export
     if (isTauri()) {
       try {
         const filePath = await openVideoFileDialog();
-        if (!filePath) return; // user cancelled
+        if (!filePath) return;
 
         setIsLoading(true);
         await loadVideoFromPath(filePath);
         showToast("success", "Video loaded successfully");
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Failed to load video";
+        const msg =
+          err instanceof Error ? err.message : "Failed to load video";
         console.error("[VideoPreview] Tauri load error:", msg);
         showToast("error", msg);
       } finally {
@@ -111,7 +140,6 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       return;
     }
 
-    // Browser fallback — standard file input
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "video/*";
@@ -123,7 +151,8 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
           await loadVideo(file);
           showToast("success", "Video loaded successfully");
         } catch (err) {
-          const msg = err instanceof Error ? err.message : "Failed to load video";
+          const msg =
+            err instanceof Error ? err.message : "Failed to load video";
           console.error("[VideoPreview] Browser load error:", msg);
           showToast("error", msg);
         } finally {
@@ -134,42 +163,36 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
     input.click();
   }, [loadVideo, loadVideoFromPath]);
 
-  // ── Keyboard shortcuts ──
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't capture when typing in an input
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      ) {
-        return;
-      }
-
-      switch (e.key) {
-        case " ":
-          e.preventDefault();
-          togglePlayback();
-          break;
-        case "ArrowLeft":
-          e.preventDefault();
-          seek(useEditorStore.getState().playback.currentTime - 0.5);
-          break;
-        case "ArrowRight":
-          e.preventDefault();
-          seek(useEditorStore.getState().playback.currentTime + 0.5);
-          break;
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [togglePlayback, seek]);
-
   return (
-    <div className="flex flex-col h-full">
+    <MediaController
+      autohide="-1"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        width: "100%",
+        background: "transparent",
+        ["--media-background-color" as string]: "transparent",
+      }}
+    >
+      {/* Bridge element — hidden, provides state to Media Chrome */}
+      <chatcut-media
+        slot="media"
+        tabIndex={-1}
+        suppressHydrationWarning
+        style={{
+          position: "absolute",
+          width: 0,
+          height: 0,
+          overflow: "hidden",
+          pointerEvents: "none",
+        }}
+      />
+
       {/* Video Canvas Container */}
       <div
-        className="relative flex-1 flex items-center justify-center bg-neutral-950 overflow-hidden"
+        className="relative flex items-center justify-center bg-neutral-950 overflow-hidden"
+        style={{ width: "100%", flex: "1 1 0%", minHeight: 0, alignSelf: "stretch" }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -199,8 +222,21 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
                 viewBox="0 0 24 24"
                 fill="none"
               >
-                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-                <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  className="opacity-25"
+                />
+                <path
+                  d="M4 12a8 8 0 018-8"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  className="opacity-75"
+                />
               </svg>
               <p className="text-neutral-400 text-sm">Loading video...</p>
             </div>
@@ -211,7 +247,9 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
         {loadError && !isLoading && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="flex flex-col items-center gap-3 p-6 rounded-xl bg-red-950/30 border border-red-900/50 max-w-sm text-center">
-              <p className="text-red-300 text-sm font-medium">Failed to load video</p>
+              <p className="text-red-300 text-sm font-medium">
+                Failed to load video
+              </p>
               <p className="text-red-400/70 text-xs">{loadError}</p>
               <button
                 onClick={handleFileSelect}
@@ -257,10 +295,7 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       </div>
 
       {/* Transport Controls */}
-      <TransportControls
-        onTogglePlayback={togglePlayback}
-        onSeek={seek}
-      />
-    </div>
+      <TransportControls />
+    </MediaController>
   );
 }
