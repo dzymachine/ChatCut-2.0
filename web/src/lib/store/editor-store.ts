@@ -108,6 +108,7 @@ export interface EditorStore {
   updateEffect: (clipId: string, appliedEffectId: string, parameters: Record<string, number>) => void;
   toggleEffect: (clipId: string, appliedEffectId: string, enabled: boolean) => void;
   getClipEffects: (clipId: string) => AppliedEffect[];
+  setClipRecipe: (clipId: string, recipe: import('../../../src-shared/recipe').Recipe) => void;
 
   // ── Timeline Actions ──
   setTimelineZoom: (pixelsPerSecond: number) => void;
@@ -733,6 +734,20 @@ function createStore() {
       if (clip) return clip.effects;
     }
     return [];
+  },
+
+  setClipRecipe: (clipId, recipe) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) =>
+            clip.id === clipId ? { ...clip, recipe } : clip
+          ),
+        })),
+      },
+    }));
   },
 
   // ── Timeline Actions ──

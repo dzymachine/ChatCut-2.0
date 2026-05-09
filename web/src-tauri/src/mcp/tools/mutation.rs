@@ -49,6 +49,7 @@ pub fn add_clip(
         link_id: None,
         effects: vec![],
         transitions: vec![],
+        recipe: None,
     };
 
     target_track.clips.push(clip.clone());
@@ -170,6 +171,20 @@ pub fn update_effect_param(
     }
 
     Ok(())
+}
+
+pub fn attach_recipe(
+    project_file: &mut ChatCutProjectFile,
+    clip_id: &str,
+    recipe: crate::recipe::Recipe,
+) -> Result<String, ChatCutError> {
+    let filter_string = crate::recipe::compile_recipe(&recipe)
+        .map_err(|e| ChatCutError::InvalidParams(format!("Recipe compilation failed: {}", e)))?;
+
+    let clip = find_clip_mut(project_file, clip_id)?;
+    clip.recipe = Some(recipe);
+
+    Ok(filter_string)
 }
 
 fn find_clip_mut<'a>(

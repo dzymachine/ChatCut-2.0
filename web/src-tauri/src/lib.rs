@@ -1,8 +1,10 @@
 mod commands;
 mod error;
 mod export;
+mod ffmpeg;
 mod mcp;
 mod project;
+mod recipe;
 mod shared;
 
 use std::sync::Mutex;
@@ -71,6 +73,10 @@ pub fn run() {
             commands::list_media_files,
             commands::get_app_data_dir,
             commands::check_ffmpeg,
+            commands::list_filter_categories,
+            commands::list_filters,
+            commands::describe_filter,
+            commands::validate_recipe,
             export::export_video,
             export::get_export_progress,
             export::cancel_export,

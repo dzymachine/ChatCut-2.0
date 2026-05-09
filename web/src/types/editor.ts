@@ -98,6 +98,11 @@ export interface Clip {
   // Effects are applied in order (first to last).
   effects: import('./effects').AppliedEffect[];
 
+  // FFmpeg filter recipe — composed by the agent via the recipe builder.
+  // When present, the compiled recipe filters are appended after legacy effects
+  // in the export pipeline.
+  recipe?: import('../../src-shared/recipe').Recipe;
+
   // Future: per-clip transitions, keyframes
   transitions: Transition[];
 }

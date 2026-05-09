@@ -1,7 +1,9 @@
 pub mod tools;
 pub mod transport;
 
+use crate::ffmpeg::catalog;
 use crate::project::{read_project, write_project, ChatCutProjectFile};
+use crate::recipe::{self, Recipe};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -63,6 +65,34 @@ pub struct UpdateEffectParams {
     pub param_name: String,
     /// New parameter value.
     pub param_value: f64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListFiltersParams {
+    /// Category ID to filter by (e.g. "color", "blur"). Optional.
+    pub category: Option<String>,
+    /// Keyword to search filter names and descriptions. Optional.
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DescribeFilterParams {
+    /// Name of the FFmpeg filter to describe (e.g. "eq", "hue").
+    pub filter_name: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ComposeRecipeParams {
+    /// ID of the clip to attach the recipe to.
+    pub clip_id: String,
+    /// The recipe filter graph.
+    pub recipe: Recipe,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ValidateRecipeParams {
+    /// The recipe to validate.
+    pub recipe: Recipe,
 }
 
 // ─── Server ────────────────────────────────────────────────────────────────────
@@ -274,6 +304,104 @@ impl ChatCutMcpServer {
                 }
             }
             Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    // ── FFmpeg Filter Catalog Tools ──
+
+    #[tool(description = "List all FFmpeg filter categories with their filter counts.")]
+    fn list_filter_categories(&self) -> String {
+        match catalog::list_categories() {
+            Ok(cats) => serde_json::to_string_pretty(&cats)
+                .unwrap_or_else(|e| format!("Error: {}", e)),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(description = "List FFmpeg filters, optionally filtered by category or keyword.")]
+    fn list_filters(
+        &self,
+        Parameters(params): Parameters<ListFiltersParams>,
+    ) -> String {
+        match catalog::list_filters(params.category.as_deref(), params.query.as_deref()) {
+            Ok(filters) => serde_json::to_string_pretty(&filters)
+                .unwrap_or_else(|e| format!("Error: {}", e)),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(description = "Get detailed info about a specific FFmpeg filter including parameters, types, defaults, and ranges.")]
+    fn describe_filter(
+        &self,
+        Parameters(params): Parameters<DescribeFilterParams>,
+    ) -> String {
+        match catalog::describe_filter(&params.filter_name) {
+            Ok(detail) => serde_json::to_string_pretty(&detail)
+                .unwrap_or_else(|e| format!("Error: {}", e)),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    // ── Recipe Tools ──
+
+    #[tool(description = "Compose an FFmpeg filter recipe and attach it to a clip.")]
+    fn compose_recipe(
+        &self,
+        Parameters(params): Parameters<ComposeRecipeParams>,
+    ) -> String {
+        if let Err(e) = self.check_write_allowed() {
+            return format!("Error: {}", e);
+        }
+
+        // Validate the recipe compiles
+        match recipe::compile_recipe(&params.recipe) {
+            Ok(_) => {}
+            Err(e) => return format!("Error: recipe invalid: {}", e),
+        }
+
+        match self.load_project() {
+            Ok(mut pf) => {
+                match tools::mutation::attach_recipe(&mut pf, &params.clip_id, params.recipe) {
+                    Ok(filter_string) => match self.save_project(&pf) {
+                        Ok(()) => {
+                            let result = serde_json::json!({
+                                "clipId": params.clip_id,
+                                "filterString": filter_string,
+                            });
+                            serde_json::to_string_pretty(&result)
+                                .unwrap_or_else(|e| format!("Error: {}", e))
+                        }
+                        Err(e) => format!("Error saving: {}", e),
+                    },
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    #[tool(description = "Validate a recipe by compiling it and running an FFmpeg dry-run.")]
+    fn validate_recipe(
+        &self,
+        Parameters(params): Parameters<ValidateRecipeParams>,
+    ) -> String {
+        match recipe::validator::validate_recipe_dryrun(&params.recipe) {
+            Ok(filter_string) => {
+                let result = serde_json::json!({
+                    "valid": true,
+                    "filterString": filter_string,
+                });
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|e| format!("Error: {}", e))
+            }
+            Err(e) => {
+                let result = serde_json::json!({
+                    "valid": false,
+                    "error": e.to_string(),
+                });
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|e| format!("Error: {}", e))
+            }
         }
     }
 }
