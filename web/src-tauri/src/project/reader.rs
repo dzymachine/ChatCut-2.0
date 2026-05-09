@@ -69,6 +69,8 @@ pub struct SerializedClip {
     pub effects: Vec<AppliedEffect>,
     #[serde(default)]
     pub transitions: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<crate::recipe::Recipe>,
 }
 
 impl SerializedClip {

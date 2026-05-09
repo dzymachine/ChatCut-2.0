@@ -11,7 +11,9 @@
  */
 
 import type { AppliedEffect } from '@/types/effects';
+import type { Recipe } from '../../../src-shared/recipe';
 import { getEffectDescriptor } from './registry';
+import { compileRecipe } from '../recipe/compiler';
 
 // ─── Filter String for a Single Effect ──────────────────────────────────────
 
@@ -254,6 +256,8 @@ export interface ClipExportData {
   timelineStart: number;
   /** Effect stack */
   effects: AppliedEffect[];
+  /** Optional recipe filter graph (appended after legacy effects) */
+  recipe?: Recipe;
 }
 
 /**
@@ -288,10 +292,22 @@ export function buildFilterComplex(clips: ClipExportData[]): {
     let videoChain = `${inputV}trim=start=${formatFFmpegValue(trimStart)}:end=${formatFFmpegValue(trimEnd)},setpts=PTS-STARTPTS`;
     let audioChain = `${inputA}atrim=start=${formatFFmpegValue(trimStart)}:end=${formatFFmpegValue(trimEnd)},asetpts=PTS-STARTPTS`;
 
-    // 2. Apply video effects
+    // 2. Apply video effects (legacy effect stack)
     const videoFilters = effectStackToVideoFilters(clip.effects);
     if (videoFilters) {
       videoChain += `,${videoFilters}`;
+    }
+
+    // 2b. Apply recipe filters (appended after legacy effects)
+    if (clip.recipe) {
+      try {
+        const recipeFilters = compileRecipe(clip.recipe);
+        if (recipeFilters) {
+          videoChain += `,${recipeFilters}`;
+        }
+      } catch {
+        // Skip invalid recipes during export
+      }
     }
 
     // 3. Apply audio effects

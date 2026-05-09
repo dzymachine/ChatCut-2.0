@@ -15,7 +15,11 @@
 import { TOOLS } from '../../../src-shared/tools';
 import { useEditorStore } from '@/lib/store/editor-store';
 import { getEffectDescriptor } from '@/lib/effects/registry';
+import { isTauri } from '@/lib/tauri/bridge';
+import { compileRecipe } from '@/lib/recipe/compiler';
+import { validateRecipeStructure } from '@/lib/recipe/validator';
 import { summarizeEditNode } from './summarize';
+import type { Recipe } from '../../../src-shared/recipe';
 import type { ToolCall, ToolResult } from './types';
 
 // ─── Tool Execution ────────────────────────────────────────────────────────────
@@ -25,7 +29,7 @@ import type { ToolCall, ToolResult } from './types';
  * Use `executeToolWithHistory` for the standard path that records mutations
  * in the edit history panel.
  */
-export function executeToolRaw(call: ToolCall): ToolResult {
+export async function executeToolRaw(call: ToolCall): Promise<ToolResult> {
   const toolDef = TOOLS.find((t) => t.name === call.name);
   if (!toolDef) {
     return { success: false, error: `Unknown tool: ${call.name}` };
@@ -37,7 +41,7 @@ export function executeToolRaw(call: ToolCall): ToolResult {
   }
 
   try {
-    return handler(call.arguments);
+    return await handler(call.arguments);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { success: false, error: message };
@@ -52,7 +56,7 @@ export function executeToolRaw(call: ToolCall): ToolResult {
  * was not a no-op). This prevents stale snapshotIndex values that would cause
  * rollbackToNode to restore the wrong state.
  */
-export function executeToolWithHistory(call: ToolCall): ToolResult & { editNodeId?: string } {
+export async function executeToolWithHistory(call: ToolCall): Promise<ToolResult & { editNodeId?: string }> {
   // Only record edit history for mutations
   const toolDef = TOOLS.find((t) => t.name === call.name);
   const isMutation = toolDef?.type === 'mutation';
@@ -60,7 +64,7 @@ export function executeToolWithHistory(call: ToolCall): ToolResult & { editNodeI
   // Capture undo stack length before execution
   const beforeLen = isMutation ? useEditorStore.getState().undoStack.length : 0;
 
-  const result = executeToolRaw(call);
+  const result = await executeToolRaw(call);
   if (!result.success) return result;
   if (!isMutation) return result;
 
@@ -91,7 +95,15 @@ export const executeTool = executeToolWithHistory;
 
 // ─── Handler Map ───────────────────────────────────────────────────────────────
 
-type ToolHandler = (args: Record<string, unknown>) => ToolResult;
+type ToolHandler = (args: Record<string, unknown>) => ToolResult | Promise<ToolResult>;
+
+async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauri()) {
+    throw new Error(`"${cmd}" requires the desktop app`);
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(cmd, args);
+}
 
 const TOOL_HANDLERS: Record<string, ToolHandler> = {
   // ── Introspection ──
@@ -327,5 +339,105 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
     store.updateEffect(clipId, appliedEffectId, parameters);
     store.commitUndoBatch();
     return { success: true, data: { clipId, appliedEffectId, parameters } };
+  },
+
+  // ── FFmpeg Filter Catalog ──
+
+  list_filter_categories: async () => {
+    const data = await tauriInvoke('list_filter_categories');
+    return { success: true, data };
+  },
+
+  list_filters: async (args) => {
+    const data = await tauriInvoke('list_filters', {
+      category: args.category as string | undefined,
+      query: args.query as string | undefined,
+    });
+    return { success: true, data };
+  },
+
+  describe_filter: async (args) => {
+    const filterName = args.filter_name as string;
+    if (!filterName) {
+      return { success: false, error: 'Parameter "filter_name" is required.' };
+    }
+    const data = await tauriInvoke('describe_filter', { filterName });
+    return { success: true, data };
+  },
+
+  // ── Recipe Tools ──
+
+  compose_recipe: (args) => {
+    const store = useEditorStore.getState();
+    let clipId = args.clip_id as string | undefined;
+
+    if (!clipId) {
+      const activeClip = store.getActiveClip();
+      if (!activeClip) {
+        return { success: false, error: 'No clip_id provided and no clip is currently selected.' };
+      }
+      clipId = activeClip.id;
+    }
+
+    if (!store.getClipById(clipId)) {
+      return { success: false, error: `Clip not found: ${clipId}` };
+    }
+
+    const recipe = args.recipe as Recipe | undefined;
+    if (!recipe || typeof recipe !== 'object') {
+      return { success: false, error: 'Parameter "recipe" is required.' };
+    }
+
+    // Structural validation
+    const validation = validateRecipeStructure(recipe);
+    if (!validation.valid) {
+      return { success: false, error: `Recipe invalid: ${validation.errors.join(', ')}` };
+    }
+
+    // Compile to filter string
+    let filterString: string;
+    try {
+      filterString = compileRecipe(recipe);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: `Recipe compilation failed: ${message}` };
+    }
+
+    store.beginUndoBatch('Compose recipe');
+    store.setClipRecipe(clipId, recipe);
+    store.commitUndoBatch();
+
+    return { success: true, data: { clipId, filterString } };
+  },
+
+  validate_recipe: async (args) => {
+    const recipe = args.recipe as Recipe | undefined;
+    if (!recipe || typeof recipe !== 'object') {
+      return { success: false, error: 'Parameter "recipe" is required.' };
+    }
+
+    // Structural validation first (fast, in-browser)
+    const validation = validateRecipeStructure(recipe);
+    if (!validation.valid) {
+      return { success: true, data: { valid: false, errors: validation.errors } };
+    }
+
+    // Compile to check syntax
+    let filterString: string;
+    try {
+      filterString = compileRecipe(recipe);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: true, data: { valid: false, error: message } };
+    }
+
+    // FFmpeg dry-run via Tauri (if available)
+    if (isTauri()) {
+      const data = await tauriInvoke('validate_recipe', { recipe });
+      return { success: true, data };
+    }
+
+    // Browser-only: return structural + compile validation
+    return { success: true, data: { valid: true, filterString } };
   },
 };

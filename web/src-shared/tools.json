@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "tools": [
     {
       "name": "get_timeline_state",
@@ -161,6 +161,67 @@
         "parameters": {
           "type": "object",
           "description": "Updated parameter values as key-value pairs.",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "list_filter_categories",
+      "type": "introspection",
+      "description": "List all FFmpeg filter categories with their filter counts. Use this to discover what kinds of filters are available before browsing specific categories.",
+      "parameters": {}
+    },
+    {
+      "name": "list_filters",
+      "type": "introspection",
+      "description": "List available FFmpeg filters, optionally filtered by category or keyword search. Returns filter names, types, and descriptions.",
+      "parameters": {
+        "category": {
+          "type": "string",
+          "description": "Category ID to filter by (e.g. 'color', 'blur', 'transform'). Get valid IDs from list_filter_categories."
+        },
+        "query": {
+          "type": "string",
+          "description": "Keyword to search filter names and descriptions."
+        }
+      }
+    },
+    {
+      "name": "describe_filter",
+      "type": "introspection",
+      "description": "Get detailed info about a specific FFmpeg filter including all its parameters, types, defaults, and value ranges.",
+      "parameters": {
+        "filter_name": {
+          "type": "string",
+          "description": "Name of the FFmpeg filter to describe (e.g. 'eq', 'hue', 'gblur').",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "compose_recipe",
+      "type": "mutation",
+      "description": "Compose an FFmpeg filter recipe and attach it to a clip. The recipe is a filter graph with nodes (filters + params) connected in sequence. Validates structure before attaching.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to attach the recipe to. If omitted, uses the currently selected clip."
+        },
+        "recipe": {
+          "type": "object",
+          "description": "Recipe object with 'nodes' array (each node has 'id', 'filter', 'params' or 'raw') and 'connections' array (each has 'from' and 'to' node IDs, using 'input'/'output' for endpoints).",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "validate_recipe",
+      "type": "introspection",
+      "description": "Validate a recipe by compiling it to an FFmpeg filter string and running a dry-run. Returns the compiled filter string on success, or an error describing what's wrong.",
+      "parameters": {
+        "recipe": {
+          "type": "object",
+          "description": "Recipe object to validate (same format as compose_recipe).",
           "required": true
         }
       }
