@@ -77,6 +77,7 @@ interface SerializedClip {
   linkId: string | null;
   effects: AppliedEffect[];
   transitions: unknown[];
+  recipe?: import('../../../src-shared/recipe').Recipe;
 }
 
 // ─── Serialize (Save) ───────────────────────────────────────────────────────
@@ -111,6 +112,7 @@ export function serializeProject(): ChatCutProjectFile {
           enabled: e.enabled,
         })),
         transitions: clip.transitions,
+        ...(clip.recipe && { recipe: clip.recipe }),
       };
     }),
     muted: track.muted,
@@ -227,6 +229,7 @@ export async function applyLoadedProject(file: ChatCutProjectFile): Promise<void
       },
       effects: clip.effects ?? [],
       transitions: (clip.transitions ?? []) as Clip['transitions'],
+      ...(clip.recipe && { recipe: clip.recipe }),
     })),
     muted: track.muted,
     locked: track.locked,

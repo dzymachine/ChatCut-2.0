@@ -53,6 +53,9 @@ pub struct ApplyEffectParams {
     pub clip_id: String,
     /// Effect identifier from the registry (e.g. "gaussian_blur", "brightness").
     pub effect_id: String,
+    /// Initial parameter values for the effect (key-value pairs). Optional.
+    #[serde(default)]
+    pub parameters: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -61,10 +64,8 @@ pub struct UpdateEffectParams {
     pub clip_id: String,
     /// ID of the applied effect instance.
     pub applied_effect_id: String,
-    /// Parameter name.
-    pub param_name: String,
-    /// New parameter value.
-    pub param_value: f64,
+    /// Updated parameter values as key-value pairs.
+    pub parameters: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -101,6 +102,8 @@ pub struct ValidateRecipeParams {
 pub struct ChatCutMcpServer {
     project_path: Option<PathBuf>,
     app_data_dir: PathBuf,
+    /// Populated by `#[tool_router]`; consumed by `#[tool_handler]` via macro.
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
@@ -255,7 +258,7 @@ impl ChatCutMcpServer {
         }
         match self.load_project() {
             Ok(mut pf) => {
-                let effect_params = HashMap::new();
+                let effect_params = params.parameters.unwrap_or_default();
                 match tools::mutation::apply_effect(
                     &mut pf,
                     &params.clip_id,
@@ -274,7 +277,7 @@ impl ChatCutMcpServer {
         }
     }
 
-    #[tool(description = "Update a parameter on an already-applied effect.")]
+    #[tool(description = "Update one or more parameters on an already-applied effect.")]
     fn update_effect_param(
         &self,
         Parameters(params): Parameters<UpdateEffectParams>,
@@ -284,19 +287,18 @@ impl ChatCutMcpServer {
         }
         match self.load_project() {
             Ok(mut pf) => {
-                let mut effect_params = HashMap::new();
-                effect_params
-                    .insert(params.param_name.clone(), serde_json::json!(params.param_value));
+                let updated_keys: Vec<String> = params.parameters.keys().cloned().collect();
                 match tools::mutation::update_effect_param(
                     &mut pf,
                     &params.clip_id,
                     &params.applied_effect_id,
-                    effect_params,
+                    params.parameters,
                 ) {
                     Ok(()) => match self.save_project(&pf) {
                         Ok(()) => format!(
-                            "Updated {} on effect {}",
-                            params.param_name, params.applied_effect_id
+                            "Updated [{}] on effect {}",
+                            updated_keys.join(", "),
+                            params.applied_effect_id
                         ),
                         Err(e) => format!("Error saving: {}", e),
                     },

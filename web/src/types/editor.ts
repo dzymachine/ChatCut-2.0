@@ -205,7 +205,6 @@ export const DEFAULT_PLAYBACK: PlaybackState = {
 // ─── Chat / AI ──────────────────────────────────────────────────────────────
 
 export type ChatRole = 'user' | 'assistant' | 'system';
-export type ChatMode = 'effects' | 'generation';
 
 export interface ChatMessage {
   id: string;

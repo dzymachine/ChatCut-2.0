@@ -11,9 +11,6 @@ pub enum ChatCutError {
     #[error("ChatCut app is currently open — mutations from external MCP clients are not yet supported in v1")]
     AppInstanceLocked,
 
-    #[error("Tool not found: {0}")]
-    ToolNotFound(String),
-
     #[error("Invalid parameters: {0}")]
     InvalidParams(String),
 
