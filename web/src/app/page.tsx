@@ -3,6 +3,7 @@
 import { VideoPreview } from "@/components/editor/VideoPreview";
 import { VideoLibrary } from "@/components/editor/VideoLibrary";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { FloatingChatPanel } from "@/components/chat/FloatingChatPanel";
 import { EditHistoryPanel } from "@/components/history/EditHistoryPanel";
 import { Timeline } from "@/components/editor/timeline/Timeline";
 import { ExportDialog } from "@/components/editor/export/ExportDialog";
@@ -24,7 +25,25 @@ export default function EditorPage() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isChatFloating, setIsChatFloating] = useState(false);
   const tauriStatus = useTauriStatus();
+
+  // Persist popout state across reloads.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("chatcut.chatFloating");
+      if (raw === "true") setIsChatFloating(true);
+    } catch {
+      // ignore
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("chatcut.chatFloating", String(isChatFloating));
+    } catch {
+      // ignore
+    }
+  }, [isChatFloating]);
 
   const handleEngineReady = useCallback(() => {
     setEngineReady(true);
@@ -150,17 +169,24 @@ export default function EditorPage() {
             </Panel>
             <PanelResizeHandle className="w-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-col-resize" />
 
-            {/* Center: Preview + Chat stacked — 55% */}
+            {/* Center: Preview alone when chat is floating, otherwise
+                Preview + Chat stacked — 55% */}
             <Panel defaultSize={55} minSize={20}>
-              <PanelGroup direction="vertical" id="center" className="h-full">
-                <Panel defaultSize={55} minSize={15}>
-                  <VideoPreview onEngineReady={handleEngineReady} />
-                </Panel>
-                <PanelResizeHandle className="h-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-row-resize" />
-                <Panel defaultSize={45} minSize={10}>
-                  <ChatPanel />
-                </Panel>
-              </PanelGroup>
+              {isChatFloating ? (
+                <VideoPreview onEngineReady={handleEngineReady} />
+              ) : (
+                <PanelGroup direction="vertical" id="center" className="h-full">
+                  <Panel defaultSize={55} minSize={15}>
+                    <VideoPreview onEngineReady={handleEngineReady} />
+                  </Panel>
+                  <PanelResizeHandle className="h-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-row-resize" />
+                  <Panel defaultSize={45} minSize={10}>
+                    <div className="h-full border-l border-neutral-800">
+                      <ChatPanel onPopOut={() => setIsChatFloating(true)} />
+                    </div>
+                  </Panel>
+                </PanelGroup>
+              )}
             </Panel>
             <PanelResizeHandle className="w-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-col-resize" />
 
@@ -180,6 +206,14 @@ export default function EditorPage() {
           <Timeline />
         </Panel>
       </PanelGroup>
+
+      {/* Floating Chat Panel — rendered outside the resizable layout so it
+          overlays everything and can be dragged anywhere on screen. */}
+      {isChatFloating && (
+        <FloatingChatPanel onDock={() => setIsChatFloating(false)}>
+          <ChatPanel isFloating />
+        </FloatingChatPanel>
+      )}
 
       {/* Export Dialog */}
       <ExportDialog isOpen={isExportOpen} onClose={() => setIsExportOpen(false)} />

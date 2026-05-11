@@ -18,7 +18,18 @@ interface ToolCallInfo {
   result?: { success: boolean; data?: unknown; error?: string };
 }
 
-export function ChatPanel() {
+interface ChatPanelProps {
+  /** True when ChatPanel is rendered inside FloatingChatPanel. Hides the
+   *  panel's own header (the floating wrapper provides its own title bar)
+   *  and swaps the popout icon for a no-op (the wrapper exposes the dock
+   *  button). */
+  isFloating?: boolean;
+  /** Caller-provided popout handler — clicked from the docked header to
+   *  detach the chat into a floating window. Hidden when isFloating. */
+  onPopOut?: () => void;
+}
+
+export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {}) {
   const [inputValue, setInputValue] = useState("");
   const [toolCalls, setToolCalls] = useState<Map<string, ToolCallInfo[]>>(new Map());
   const abortRef = useRef<AbortController | null>(null);
@@ -197,16 +208,41 @@ export function ChatPanel() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full min-w-0 bg-neutral-900 border-l border-neutral-800">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-neutral-800">
-        <div className="flex items-center gap-2 min-w-0">
-          <h2 className="text-sm font-semibold text-neutral-200 truncate">ChatCut</h2>
+    <div className="flex flex-col h-full min-w-0 bg-neutral-900">
+      {/* Header — hidden when floating (the wrapper provides its own bar) */}
+      {!isFloating && (
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-neutral-800">
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-sm font-semibold text-neutral-200 truncate">ChatCut</h2>
+          </div>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-800 text-[11px] text-neutral-400 font-medium truncate shrink min-w-0">
+              {model}
+            </span>
+            {onPopOut && (
+              <button
+                onClick={onPopOut}
+                className="p-1 rounded text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
+                title="Pop chat out into a floating window"
+                aria-label="Pop chat out"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M15 3h6v6" />
+                  <path d="M10 14L21 3" />
+                  <path d="M21 14v5a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h5" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-800 text-[11px] text-neutral-400 font-medium truncate shrink min-w-0">
-          {model}
-        </span>
-      </div>
+      )}
 
       {/* Messages */}
       <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
