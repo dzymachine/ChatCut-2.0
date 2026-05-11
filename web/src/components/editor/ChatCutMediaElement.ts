@@ -1,13 +1,15 @@
 "use client";
 
+import { useEditorStore } from "@/lib/store/editor-store";
+import { getVideoEngine } from "@/lib/engine/video-engine";
+
 const TIMEUPDATE_INTERVAL_MS = 250;
+/** Min |Δt| (seconds) before a paused-seek dispatches a timeupdate. */
+const PAUSED_SEEK_EPSILON = 0.01;
 
 function registerChatCutMediaElement() {
   if (typeof window === "undefined") return;
   if (customElements.get("chatcut-media")) return;
-
-  const { useEditorStore } = require("@/lib/store/editor-store");
-  const { getVideoEngine } = require("@/lib/engine/video-engine");
 
   class ChatCutMediaElement extends HTMLElement {
     private _unsubscribe: (() => void) | null = null;
@@ -16,6 +18,7 @@ function registerChatCutMediaElement() {
     private _prevVolume = 1;
     private _prevMuted = false;
     private _prevDuration = 0;
+    private _prevCurrentTime = 0;
 
     get readyState(): number {
       return getVideoEngine().hasSourceLoaded() ? 4 : 0;
@@ -117,41 +120,51 @@ function registerChatCutMediaElement() {
       this._prevVolume = state.playback.volume;
       this._prevMuted = state.playback.isMuted;
       this._prevDuration = state.project.composition.duration;
+      this._prevCurrentTime = state.playback.currentTime;
 
-      this._unsubscribe = useEditorStore.subscribe(
-        (s: { playback: { isPlaying: boolean; volume: number; isMuted: boolean }; project: { composition: { duration: number } } }) => {
-          const pb = s.playback;
+      this._unsubscribe = useEditorStore.subscribe((s) => {
+        const pb = s.playback;
 
-          if (pb.isPlaying !== this._prevIsPlaying) {
-            this._prevIsPlaying = pb.isPlaying;
-            this.dispatchEvent(new Event(pb.isPlaying ? "play" : "pause"));
-            if (pb.isPlaying) {
-              this.dispatchEvent(new Event("playing"));
-              this._startTimeupdateTimer();
-            } else {
-              this._stopTimeupdateTimer();
-            }
-          }
-
-          if (
-            pb.volume !== this._prevVolume ||
-            pb.isMuted !== this._prevMuted
-          ) {
-            this._prevVolume = pb.volume;
-            this._prevMuted = pb.isMuted;
-            this.dispatchEvent(new Event("volumechange"));
-          }
-
-          const dur = s.project.composition.duration;
-          if (dur !== this._prevDuration) {
-            this._prevDuration = dur;
-            this.dispatchEvent(new Event("durationchange"));
-            if (dur > 0) {
-              this.dispatchEvent(new Event("loadedmetadata"));
-            }
+        if (pb.isPlaying !== this._prevIsPlaying) {
+          this._prevIsPlaying = pb.isPlaying;
+          this.dispatchEvent(new Event(pb.isPlaying ? "play" : "pause"));
+          if (pb.isPlaying) {
+            this.dispatchEvent(new Event("playing"));
+            this._startTimeupdateTimer();
+          } else {
+            this._stopTimeupdateTimer();
           }
         }
-      );
+
+        if (
+          pb.volume !== this._prevVolume ||
+          pb.isMuted !== this._prevMuted
+        ) {
+          this._prevVolume = pb.volume;
+          this._prevMuted = pb.isMuted;
+          this.dispatchEvent(new Event("volumechange"));
+        }
+
+        const dur = s.project.composition.duration;
+        if (dur !== this._prevDuration) {
+          this._prevDuration = dur;
+          this.dispatchEvent(new Event("durationchange"));
+          if (dur > 0) {
+            this.dispatchEvent(new Event("loadedmetadata"));
+          }
+        }
+
+        // Drive Media Chrome's scrubber/time display during seek-while-paused.
+        // The interval timer only runs during playback, so paused seeks
+        // (timeline click, scrubber drag) wouldn't otherwise propagate.
+        if (
+          !pb.isPlaying &&
+          Math.abs(pb.currentTime - this._prevCurrentTime) > PAUSED_SEEK_EPSILON
+        ) {
+          this._prevCurrentTime = pb.currentTime;
+          this.dispatchEvent(new Event("timeupdate"));
+        }
+      });
 
       if (this.duration > 0) {
         this.dispatchEvent(new Event("loadedmetadata"));
@@ -167,6 +180,7 @@ function registerChatCutMediaElement() {
     private _startTimeupdateTimer(): void {
       if (this._timeupdateTimer) return;
       this._timeupdateTimer = setInterval(() => {
+        this._prevCurrentTime = useEditorStore.getState().playback.currentTime;
         this.dispatchEvent(new Event("timeupdate"));
       }, TIMEUPDATE_INTERVAL_MS);
     }
