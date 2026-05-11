@@ -28,9 +28,13 @@ pub fn run() {
             .and_then(|i| args.get(i + 1))
             .map(std::path::PathBuf::from);
 
-        let app_data_dir = dirs_next::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("com.chatcut.app");
+        let app_data_dir = {
+            use etcetera::BaseStrategy;
+            etcetera::choose_base_strategy()
+                .map(|s| s.data_dir())
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("com.chatcut.app")
+        };
 
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async {

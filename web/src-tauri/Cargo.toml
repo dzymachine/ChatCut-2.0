@@ -3,7 +3,7 @@ name = "chatcut"
 version = "0.1.0"
 description = "ChatCut - AI-Powered Video Editor"
 authors = ["ChatCut Team"]
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "chatcut_lib"
@@ -27,7 +27,7 @@ thiserror = "2"
 schemars = "1"
 axum = "0.7"
 uuid = { version = "1", features = ["v4"] }
-dirs-next = "2"
+etcetera = "0.10"
 anyhow = "1"
 
 [profile.release]

@@ -139,7 +139,7 @@ fn topological_sort(recipe: &Recipe) -> Result<Vec<String>, String> {
     // Kahn's algorithm
     let mut queue: VecDeque<&str> = in_degree
         .iter()
-        .filter(|(_, &deg)| deg == 0)
+        .filter(|&(_, &deg)| deg == 0)
         .map(|(&id, _)| id)
         .collect();
 
