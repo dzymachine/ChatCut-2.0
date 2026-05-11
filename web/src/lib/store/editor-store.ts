@@ -1625,9 +1625,45 @@ function createStore() {
       parentId,
       createdAt: Date.now(),
     };
-    set((s) => ({
-      editHistory: [...s.editHistory, fullNode],
-    }));
+    set((s) => {
+      const newEditHistory = [...s.editHistory, fullNode];
+
+      // Amend the most recent undo Command so its previousState/nextState
+      // cover the editHistory transition this append creates. Without this,
+      // Cmd-Z restores tracks but leaves the orphaned EditNode visible in
+      // the panel — the classic "history doesn't update on undo" bug.
+      //
+      // We rely on tool-registry.executeToolWithHistory calling this
+      // immediately after the handler's commitUndoBatch, so the latest
+      // command IS the one we want to amend. If there's no command (the
+      // append happened outside a tool-invocation context), we just append
+      // without affecting undo state.
+      let newUndoStack = s.undoStack;
+      if (s.undoStack.length > 0) {
+        const lastIdx = s.undoStack.length - 1;
+        const lastCmd = s.undoStack[lastIdx];
+        newUndoStack = [
+          ...s.undoStack.slice(0, lastIdx),
+          {
+            ...lastCmd,
+            previousState: {
+              ...lastCmd.previousState,
+              // If the handler's batch already captured editHistory (e.g.
+              // toggle/delete edit-node flows), don't overwrite it — that
+              // version corresponds to the batch's begin point. Otherwise
+              // capture the pre-append history.
+              editHistory: lastCmd.previousState.editHistory ?? s.editHistory,
+            },
+            nextState: {
+              ...lastCmd.nextState,
+              editHistory: newEditHistory,
+            },
+          },
+        ];
+      }
+
+      return { editHistory: newEditHistory, undoStack: newUndoStack };
+    });
     return id;
   },
 
