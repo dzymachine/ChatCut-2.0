@@ -164,44 +164,33 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
   }, [loadVideo, loadVideoFromPath]);
 
   return (
-    <MediaController
-      autohide="-1"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        width: "100%",
-        background: "transparent",
-        ["--media-background-color" as string]: "transparent",
-      }}
-    >
-      {/* Bridge element — hidden, provides state to Media Chrome */}
-      <chatcut-media
-        slot="media"
-        tabIndex={-1}
-        suppressHydrationWarning
-        style={{
-          position: "absolute",
-          width: 0,
-          height: 0,
-          overflow: "hidden",
-          pointerEvents: "none",
-        }}
-      />
-
+    // Outer column: canvas fills the available space; the Media Chrome
+    // controller + transport bar sit beneath as their own row. Earlier the
+    // canvas was rendered as a non-slotted child of <MediaController>,
+    // which sent it to media-controller's default (overlay) slot — sized
+    // to the controls, not the media area — and produced the cropped /
+    // misaligned preview. Keeping <MediaController> as a sibling of the
+    // canvas means media-chrome only governs the chrome around the bridge.
+    <div className="flex flex-col h-full w-full bg-neutral-950">
       {/* Video Canvas Container */}
       <div
         className="relative flex items-center justify-center bg-neutral-950 overflow-hidden"
-        style={{ width: "100%", flex: "1 1 0%", minHeight: 0, alignSelf: "stretch" }}
+        style={{ width: "100%", flex: "1 1 0%", minHeight: 0 }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {/* Canvas */}
+        {/* Canvas — display-sized via CSS to fill the container while the
+            engine controls the backing-store dimensions for crispness. */}
         <canvas
           ref={canvasRef}
-          className="max-w-full max-h-full object-contain"
-          style={{ imageRendering: "auto" }}
+          className="block max-w-full max-h-full"
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            imageRendering: "auto",
+          }}
         />
 
         {/* Drop overlay */}
@@ -294,8 +283,32 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
         )}
       </div>
 
-      {/* Transport Controls */}
-      <TransportControls />
-    </MediaController>
+      {/* Media-controller + transport controls live below the canvas.
+          The bridge MUST be a direct child of MediaController (media-chrome
+          looks at top-level slot="media"), but it remains visually hidden. */}
+      <MediaController
+        autohide="-1"
+        style={{
+          display: "block",
+          width: "100%",
+          background: "transparent",
+          ["--media-background-color" as string]: "transparent",
+        }}
+      >
+        <chatcut-media
+          slot="media"
+          tabIndex={-1}
+          suppressHydrationWarning
+          style={{
+            position: "absolute",
+            width: 0,
+            height: 0,
+            overflow: "hidden",
+            pointerEvents: "none",
+          }}
+        />
+        <TransportControls />
+      </MediaController>
+    </div>
   );
 }
