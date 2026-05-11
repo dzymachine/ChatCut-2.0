@@ -776,6 +776,35 @@ export class VideoEngine {
           drawHeight
         );
 
+        // Vignette is an FFmpeg-only filter (no CSS equivalent), so it's
+        // applied here as a radial gradient overlay on top of the drawn
+        // frame. Drawn in the same transformed space so the vignette
+        // tracks scale/rotation/position. The 'angle' parameter mirrors
+        // FFmpeg's vignette angle: 0 = no darkening, PI/2 ≈ heavy.
+        const vignetteEffect = clip.effects.find(
+          (e) => e.enabled && e.effectId === 'vignette'
+        );
+        if (vignetteEffect) {
+          const angle = vignetteEffect.parameters.angle ?? 0.5;
+          // Normalize angle (0..PI/2) into a darkening intensity (0..1).
+          const intensity = Math.min(1, Math.max(0, angle / (Math.PI / 2)));
+          if (intensity > 0) {
+            const cx = 0;
+            const cy = 0;
+            const innerR = Math.min(drawWidth, drawHeight) * 0.25;
+            const outerR = Math.hypot(drawWidth, drawHeight) / 2;
+            const gradient = ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
+            gradient.addColorStop(0, 'rgba(0,0,0,0)');
+            gradient.addColorStop(1, `rgba(0,0,0,${intensity})`);
+            // Clear ctx.filter so the gradient itself isn't sepia-tinted etc.
+            const prevFilter = ctx.filter;
+            ctx.filter = 'none';
+            ctx.fillStyle = gradient;
+            ctx.fillRect(-drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+            ctx.filter = prevFilter;
+          }
+        }
+
         ctx.restore();
       }
     } catch (err) {

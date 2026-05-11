@@ -59,6 +59,7 @@ import {
 } from '@/types/editor';
 import type { EditNode } from '@/lib/agent/types';
 import { createDefaultEffects, effectsToTransform } from '@/lib/effects/transform-bridge';
+import { getEffectDescriptor } from '@/lib/effects/registry';
 
 // ─── Store Interface ────────────────────────────────────────────────────────
 
@@ -615,10 +616,24 @@ function createStore() {
   // ── Effect Actions ──
 
   addEffect: (clipId, effectId, parameters) => {
+    // Fill in any unspecified parameters from the effect's descriptor defaults.
+    // Without this, calling apply_effect("sepia") with no args lands with
+    // parameters: {}, which downstream consumers read as amount=0 (no visible
+    // effect). Single-parameter effects in particular are unusable otherwise.
+    const descriptor = getEffectDescriptor(effectId);
+    const resolvedParameters: Record<string, number> = { ...(parameters ?? {}) };
+    if (descriptor) {
+      for (const paramDef of descriptor.parameters) {
+        if (resolvedParameters[paramDef.id] === undefined && paramDef.default !== undefined) {
+          resolvedParameters[paramDef.id] = paramDef.default as number;
+        }
+      }
+    }
+
     const newEffect: AppliedEffect = {
       id: uuid(),
       effectId,
-      parameters: parameters ?? {},
+      parameters: resolvedParameters,
       keyframes: [],
       enabled: true,
     };
