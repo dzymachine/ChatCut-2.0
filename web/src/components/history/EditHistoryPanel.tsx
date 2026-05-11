@@ -118,11 +118,11 @@ export function EditHistoryPanel() {
                 }`}
               >
                 <div className="flex-1 min-w-0">
-                  <p className={`text-sm truncate ${isDisabled ? 'text-neutral-500 line-through' : 'text-neutral-200'}`}>
+                  <p className={`text-sm break-words ${isDisabled ? 'text-neutral-500 line-through' : 'text-neutral-200'}`}>
                     {node.summary || formatToolName(node.toolName)}
                   </p>
                   {detail && (
-                    <p className={`text-xs font-mono truncate mt-0.5 ${isDisabled ? 'text-neutral-600' : 'text-blue-400/80'}`}>
+                    <p className={`text-xs font-mono break-words mt-0.5 ${isDisabled ? 'text-neutral-600' : 'text-blue-400/80'}`}>
                       {detail}
                     </p>
                   )}

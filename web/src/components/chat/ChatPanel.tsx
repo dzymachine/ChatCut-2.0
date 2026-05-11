@@ -197,24 +197,24 @@ export function ChatPanel() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full bg-neutral-900 border-l border-neutral-800">
+    <div className="flex flex-col h-full min-w-0 bg-neutral-900 border-l border-neutral-800">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-neutral-200">ChatCut</h2>
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-neutral-800">
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-sm font-semibold text-neutral-200 truncate">ChatCut</h2>
         </div>
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-800 text-[11px] text-neutral-400 font-medium">
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-800 text-[11px] text-neutral-400 font-medium truncate shrink min-w-0">
           {model}
         </span>
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1" ref={scrollRef}>
-        <div className="p-4 space-y-4">
+      <ScrollArea className="flex-1 min-w-0" ref={scrollRef}>
+        <div className="p-4 space-y-4 min-w-0">
           {chatMessages.length === 0 && <EmptyState />}
 
           {chatMessages.map((msg) => (
-            <div key={msg.id}>
+            <div key={msg.id} className="min-w-0">
               <ChatMessage message={msg} />
               {/* Render tool call cards for assistant messages */}
               {msg.role === "assistant" &&
@@ -234,7 +234,7 @@ export function ChatPanel() {
       {/* Input */}
       <form
         onSubmit={handleSubmit}
-        className="flex items-center gap-2 p-3 border-t border-neutral-800"
+        className="flex items-center gap-2 p-3 border-t border-neutral-800 min-w-0"
       >
         <Input
           data-chat-input
@@ -242,7 +242,7 @@ export function ChatPanel() {
           onChange={(e) => setInputValue(e.target.value)}
           placeholder="Describe what to edit..."
           disabled={isChatLoading}
-          className="flex-1 bg-neutral-800 border-neutral-700 text-neutral-200 placeholder:text-neutral-500 focus-visible:ring-blue-500/50 text-sm"
+          className="flex-1 min-w-0 bg-neutral-800 border-neutral-700 text-neutral-200 placeholder:text-neutral-500 focus-visible:ring-blue-500/50 text-sm"
         />
         {isChatLoading ? (
           <Button
