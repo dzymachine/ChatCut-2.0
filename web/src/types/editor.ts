@@ -318,6 +318,9 @@ export interface Command {
 export interface ProjectSnapshot {
   tracks: Track[];
   playback: PlaybackState;
+  /** Captured when editHistory metadata (disabled flags, cascade tags) is mutated
+   *  alongside a clip change — keeps the edit-history panel in sync with undo/redo. */
+  editHistory: import('../lib/agent/types').EditNode[];
 }
 
 // ─── UI State ───────────────────────────────────────────────────────────────

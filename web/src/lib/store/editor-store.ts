@@ -83,7 +83,12 @@ export interface EditorStore {
   // ── Undo/Redo ──
   undoStack: Command[];
   redoStack: Command[];
-  _undoBatch: { description: string; snapshotTracks: Track[]; snapshotPlayback: PlaybackState } | null;
+  _undoBatch: {
+    description: string;
+    snapshotTracks: Track[];
+    snapshotPlayback: PlaybackState;
+    snapshotEditHistory: EditNode[];
+  } | null;
 
   // ── Edit History (Agent) ──
   editHistory: EditNode[];
@@ -736,6 +741,7 @@ function createStore() {
             clip.id === clipId ? { ...clip, recipe } : clip
           ),
         })),
+        updatedAt: Date.now(),
       },
     }));
   },
@@ -1492,6 +1498,9 @@ function createStore() {
     if (command.previousState.playback) {
       updates.playback = command.previousState.playback;
     }
+    if (command.previousState.editHistory) {
+      updates.editHistory = command.previousState.editHistory;
+    }
 
     set({
       ...updates,
@@ -1521,6 +1530,9 @@ function createStore() {
     if (command.nextState.playback) {
       updates.playback = command.nextState.playback;
     }
+    if (command.nextState.editHistory) {
+      updates.editHistory = command.nextState.editHistory;
+    }
 
     set({
       ...updates,
@@ -1543,6 +1555,7 @@ function createStore() {
         description,
         snapshotTracks: structuredClone(state.project.tracks),
         snapshotPlayback: structuredClone(state.playback),
+        snapshotEditHistory: structuredClone(state.editHistory),
       },
     });
   },
@@ -1554,20 +1567,24 @@ function createStore() {
 
     const afterTracks = state.project.tracks;
     const afterPlayback = state.playback;
+    const afterEditHistory = state.editHistory;
 
     const tracksChanged = JSON.stringify(batch.snapshotTracks) !== JSON.stringify(afterTracks);
     const playbackChanged = JSON.stringify(batch.snapshotPlayback) !== JSON.stringify(afterPlayback);
+    const editHistoryChanged = JSON.stringify(batch.snapshotEditHistory) !== JSON.stringify(afterEditHistory);
 
-    if (tracksChanged || playbackChanged) {
+    if (tracksChanged || playbackChanged || editHistoryChanged) {
       state.pushUndo({
         description: batch.description,
         previousState: {
           tracks: batch.snapshotTracks,
           ...(playbackChanged ? { playback: batch.snapshotPlayback } : {}),
+          ...(editHistoryChanged ? { editHistory: batch.snapshotEditHistory } : {}),
         },
         nextState: {
           tracks: structuredClone(afterTracks),
           ...(playbackChanged ? { playback: structuredClone(afterPlayback) } : {}),
+          ...(editHistoryChanged ? { editHistory: structuredClone(afterEditHistory) } : {}),
         },
       });
     }
@@ -1666,8 +1683,15 @@ function createStore() {
             n.targetClipId === node.targetClipId
           ) {
             if (!enabling) {
-              return { ...n, disabled: true, cascadeDisabledBy: nodeId };
+              // Only cascade-disable children that aren't already disabled.
+              // Preserves a child's independent disable (cascadeDisabledBy === undefined)
+              // or a disable from a different ancestor.
+              if (!n.disabled) {
+                return { ...n, disabled: true, cascadeDisabledBy: nodeId };
+              }
+              return n;
             }
+            // Re-enable only children this node cascaded over.
             if (n.cascadeDisabledBy === nodeId) {
               return { ...n, disabled: false, cascadeDisabledBy: undefined };
             }
