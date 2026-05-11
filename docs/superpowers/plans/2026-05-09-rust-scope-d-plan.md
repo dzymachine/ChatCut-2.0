@@ -4,6 +4,7 @@
 **Predecessor:** [Scope A — completed 2026-05-09](#scope-a-already-done) (edition 2024, `dirs-next` → `etcetera`, dead-code cleanup).
 **Branch:** `chore/agentic-chat-first-sprint` (or a separate `chore/rust-scope-d` branch off it).
 **Estimated effort:** 1–1.5 days for one dev. Risk: low-medium (mostly mechanical sweeps + one library bump).
+**Ecosystem survey:** brief r/rust + docs.rs + rust-lang/edition-guide check on 2026-05-09 (see [Survey notes](#survey-notes-2026-05-09)).
 
 ---
 
@@ -97,6 +98,24 @@ Opportunistic — only if D1–D4 happen.
 3. `mcp/mod.rs` line count drops by ~40% (419 → ~250).
 4. An end-to-end MCP call from Claude Desktop (`get_timeline_state`, `apply_effect` with parameters, `compose_recipe`) still works against a `.chatcut` file.
 5. `tracing` output at `chatcut=debug` shows nested spans for tool invocations.
+
+---
+
+## Survey notes (2026-05-09)
+
+Quick scan of r/rust, the Rust edition guide, and tokio-rs/tracing docs to confirm the plan is current.
+
+* **let-chains and let-else.** Both stabilized in edition 2024 ([Edition Guide / Let chains in if and while](https://doc.rust-lang.org/edition-guide/rust-2024/let-chains.html)). Use freely. No subtleties to call out — the temporary-scope edge case (drop order in `if let Some(x) = … && cond { … }`) is well-behaved on edition 2024.
+
+* **`#[tracing::instrument]`.** Still the standard pattern in 2026 ([docs.rs/tracing](https://docs.rs/tracing)). For our **sync** `#[tool]` methods (which is all of them right now) `#[instrument(skip(self), fields(…))]` works directly. **If any `#[tool]` becomes `async fn` later** (likely candidates: `validate_recipe` if it grows to call `ffmpeg::probe`, and the export pipeline), wrap the spawned future with `.instrument(span)` to keep parent context across `await` points. Plain `#[instrument]` on async fns also works but is less explicit.
+
+* **axum 0.8.** No surprises beyond the known path-syntax break (`/foo/:id` → `/foo/{id}`). The MCP transport in `mcp/transport.rs` should be checked — if it only mounts a single POST route at `/`, the bump is one Cargo.toml line.
+
+* **rmcp `#[tool]` macros.** Already adopted in `mcp/mod.rs` by nifty-haslett. Nothing new to migrate. The remaining win is **structured returns** (D2 below) — the framework supports returning typed values, and we're still returning `String` everywhere.
+
+* **`anyhow` + `thiserror` mix.** Still idiomatic in 2026. Don't replace.
+
+No findings forced a plan change. Plan stands as written below.
 
 ---
 
