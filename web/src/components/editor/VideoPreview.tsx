@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useVideoEngine } from "@/hooks/useVideoEngine";
 import { useEditorStore, isVideoFile } from "@/lib/store/editor-store";
 import { TransportControls } from "./TransportControls";
@@ -11,10 +11,47 @@ interface VideoPreviewProps {
   onEngineReady?: () => void;
 }
 
+function getFullscreenElement(): Element | null {
+  return (
+    document.fullscreenElement ||
+    (document as any).webkitFullscreenElement ||
+    (document as any).mozFullScreenElement ||
+    (document as any).msFullscreenElement ||
+    null
+  );
+}
+
+async function requestFullscreen(element: HTMLElement) {
+  if (element.requestFullscreen) {
+    await element.requestFullscreen();
+  } else if ((element as any).webkitRequestFullscreen) {
+    await (element as any).webkitRequestFullscreen();
+  } else if ((element as any).webkitEnterFullscreen) {
+    await (element as any).webkitEnterFullscreen();
+  } else {
+    throw new Error("Fullscreen API is not supported by this browser.");
+  }
+}
+
+async function exitFullscreen() {
+  if (document.exitFullscreen) {
+    await document.exitFullscreen();
+  } else if ((document as any).webkitExitFullscreen) {
+    await (document as any).webkitExitFullscreen();
+  } else if ((document as any).webkitCancelFullScreen) {
+    await (document as any).webkitCancelFullScreen();
+  } else {
+    throw new Error("Fullscreen API is not supported by this browser.");
+  }
+}
+
 export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
   const { canvasRef, isReady, loadError, loadVideo, loadVideoFromPath, togglePlayback, seek } = useVideoEngine();
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPseudoFullscreen, setIsPseudoFullscreen] = useState(false);
   const hasClip = useEditorStore((s) => s.project.tracks.some((t) => t.clips.length > 0));
 
   useEffect(() => {
@@ -22,6 +59,95 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       onEngineReady();
     }
   }, [isReady, onEngineReady]);
+
+  const synchronizeFullscreen = useCallback(() => {
+    setIsFullscreen(Boolean(getFullscreenElement()) || isPseudoFullscreen);
+  }, [isPseudoFullscreen]);
+
+  useEffect(() => {
+    window.addEventListener("fullscreenchange", synchronizeFullscreen);
+    window.addEventListener("webkitfullscreenchange", synchronizeFullscreen);
+    window.addEventListener("mozfullscreenchange", synchronizeFullscreen);
+    window.addEventListener("MSFullscreenChange", synchronizeFullscreen);
+
+    return () => {
+      window.removeEventListener("fullscreenchange", synchronizeFullscreen);
+      window.removeEventListener("webkitfullscreenchange", synchronizeFullscreen);
+      window.removeEventListener("mozfullscreenchange", synchronizeFullscreen);
+      window.removeEventListener("MSFullscreenChange", synchronizeFullscreen);
+    };
+  }, [synchronizeFullscreen]);
+
+  useEffect(() => {
+    if (!isPseudoFullscreen) return;
+
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [isPseudoFullscreen]);
+
+  const supportsNativeFullscreen = (element: HTMLElement) => {
+    return Boolean(
+      element.requestFullscreen ||
+      (element as any).webkitRequestFullscreen ||
+      (element as any).mozRequestFullScreen ||
+      (element as any).msRequestFullscreen
+    );
+  };
+
+  const toggleFullscreen = useCallback(async () => {
+    if (!containerRef.current) return;
+
+    if (isTauri()) {
+      try {
+        const windowModule = await import("@tauri-apps/api/window");
+        const windowExports = (windowModule as any).default ?? windowModule;
+        const appWindow = windowExports.getCurrent?.() ?? windowExports.appWindow ?? (windowExports.default as any)?.appWindow ?? (window as any).appWindow;
+
+        if (appWindow && typeof appWindow.isFullscreen === "function" && typeof appWindow.setFullscreen === "function") {
+          const currentlyFullscreen = await appWindow.isFullscreen();
+          await appWindow.setFullscreen(!currentlyFullscreen);
+          setIsFullscreen(!currentlyFullscreen);
+          setIsPseudoFullscreen(false);
+          return;
+        }
+
+        console.warn("Tauri window API unavailable; falling back to browser fullscreen.");
+      } catch (tauriError) {
+        console.warn("Tauri fullscreen fallback failed", tauriError);
+      }
+    }
+
+    try {
+      let nextFullscreen = false;
+
+      if (getFullscreenElement()) {
+        await exitFullscreen();
+        setIsPseudoFullscreen(false);
+        nextFullscreen = false;
+      } else if (isPseudoFullscreen) {
+        setIsPseudoFullscreen(false);
+        nextFullscreen = false;
+      } else if (supportsNativeFullscreen(containerRef.current)) {
+        await requestFullscreen(containerRef.current);
+        nextFullscreen = Boolean(getFullscreenElement());
+        setIsPseudoFullscreen(false);
+      } else {
+        setIsPseudoFullscreen(true);
+        nextFullscreen = true;
+      }
+
+      setIsFullscreen(nextFullscreen);
+    } catch (error) {
+      console.error("Fullscreen toggle failed", error);
+      setIsPseudoFullscreen(true);
+      setIsFullscreen(true);
+      showToast("error", "Fullscreen is not supported natively in this browser. Using expanded preview instead.");
+    }
+  }, [isPseudoFullscreen]);
 
   // ── Tauri Drag & Drop Events ──
   useEffect(() => {
@@ -158,18 +284,38 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
           e.preventDefault();
           seek(useEditorStore.getState().playback.currentTime + 0.5);
           break;
+        case "f":
+        case "F":
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        case "Escape":
+          if (isPseudoFullscreen || getFullscreenElement()) {
+            e.preventDefault();
+            toggleFullscreen();
+          }
+          break;
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [togglePlayback, seek]);
+  }, [togglePlayback, seek, toggleFullscreen, isPseudoFullscreen]);
 
   return (
     <div className="flex flex-col h-full">
       {/* Video Canvas Container */}
       <div
+        ref={containerRef}
         className="relative flex-1 flex items-center justify-center bg-neutral-950 overflow-hidden"
+        style={isPseudoFullscreen ? {
+          position: "fixed",
+          inset: 0,
+          zIndex: 50,
+          width: "100vw",
+          height: "100vh",
+          backgroundColor: "#050505",
+        } : undefined}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -260,6 +406,8 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       <TransportControls
         onTogglePlayback={togglePlayback}
         onSeek={seek}
+        onToggleFullscreen={toggleFullscreen}
+        isFullscreen={isFullscreen}
       />
     </div>
   );

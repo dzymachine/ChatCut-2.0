@@ -12,11 +12,15 @@ import {
 interface TransportControlsProps {
   onTogglePlayback: () => void;
   onSeek: (time: number) => void;
+  onToggleFullscreen?: () => void;
+  isFullscreen?: boolean;
 }
 
 export function TransportControls({
   onTogglePlayback,
   onSeek,
+  onToggleFullscreen,
+  isFullscreen = false,
 }: TransportControlsProps) {
   const isPlaying = useEditorStore((s) => s.playback.isPlaying);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
@@ -112,6 +116,37 @@ export function TransportControls({
           className="w-20 cursor-pointer"
         />
       </div>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onToggleFullscreen}
+            className="h-8 w-8 text-neutral-400 hover:text-white"
+            disabled={!onToggleFullscreen}
+          >
+            {isFullscreen ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M9 9H5V5" />
+                <path d="M15 9h4V5" />
+                <path d="M9 15H5v4" />
+                <path d="M15 15h4v4" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M5 11V5h6" />
+                <path d="M19 11V5h-6" />
+                <path d="M5 13v6h6" />
+                <path d="M19 13v6h-6" />
+              </svg>
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>{isFullscreen ? "Exit Fullscreen" : "Fullscreen"} (F)</p>
+        </TooltipContent>
+      </Tooltip>
     </div>
   );
 }
