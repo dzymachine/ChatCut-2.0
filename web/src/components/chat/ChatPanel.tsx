@@ -4,19 +4,13 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
 import { useSettingsStore } from "@/lib/store/settings-store";
 import { runAgentLoop, type StreamDelta } from "@/lib/agent/loop";
+import type { ToolCallInfo } from "@/types/editor";
 import { ChatMessage } from "./ChatMessage";
 import { ToolCallCard } from "./ToolCallCard";
 import { EmptyState } from "./EmptyState";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { showToast } from "@/components/ui/toast-notification";
-
-interface ToolCallInfo {
-  toolName: string;
-  args?: Record<string, unknown>;
-  result?: { success: boolean; data?: unknown; error?: string };
-}
 
 interface ChatPanelProps {
   /** True when ChatPanel is rendered inside FloatingChatPanel. Hides the
@@ -31,9 +25,9 @@ interface ChatPanelProps {
 
 export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {}) {
   const [inputValue, setInputValue] = useState("");
-  const [toolCalls, setToolCalls] = useState<Map<string, ToolCallInfo[]>>(new Map());
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const chatMessages = useEditorStore((s) => s.chatMessages);
   const isChatLoading = useEditorStore((s) => s.isChatLoading);
@@ -45,7 +39,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
   const model = useSettingsStore((s) => s.model);
   const getActiveApiKey = useSettingsStore((s) => s.getActiveApiKey);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages or tool-call updates
   useEffect(() => {
     if (scrollRef.current) {
       const viewport = scrollRef.current.querySelector(
@@ -55,7 +49,16 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
         viewport.scrollTop = viewport.scrollHeight;
       }
     }
-  }, [chatMessages, toolCalls]);
+  }, [chatMessages]);
+
+  // Auto-resize textarea up to a max height; scroll inside after that.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const next = Math.min(ta.scrollHeight, 160); // ~6 lines
+    ta.style.height = `${next}px`;
+  }, [inputValue]);
 
   const sendMessage = useCallback(
     async (message: string) => {
@@ -121,10 +124,8 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
                     toolName: delta.toolName,
                     args: delta.toolArgs,
                   });
-                  setToolCalls((prev) => {
-                    const next = new Map(prev);
-                    next.set(assistantMsgId, [...msgToolCalls]);
-                    return next;
+                  updateChatMessage(assistantMsgId, {
+                    toolCalls: [...msgToolCalls],
                   });
                 }
                 break;
@@ -146,10 +147,8 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
                       }
                     }
                   }
-                  setToolCalls((prev) => {
-                    const next = new Map(prev);
-                    next.set(assistantMsgId, [...msgToolCalls]);
-                    return next;
+                  updateChatMessage(assistantMsgId, {
+                    toolCalls: [...msgToolCalls],
                   });
                 }
                 break;
@@ -254,7 +253,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
               <ChatMessage message={msg} />
               {/* Render tool call cards for assistant messages */}
               {msg.role === "assistant" &&
-                toolCalls.get(msg.id)?.map((tc, idx) => (
+                msg.toolCalls?.map((tc, idx) => (
                   <ToolCallCard
                     key={`${msg.id}-tool-${idx}`}
                     toolName={tc.toolName}
@@ -267,19 +266,29 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
         </div>
       </ScrollArea>
 
-      {/* Input */}
+      {/* Input — multi-line, auto-resizing. Enter sends; Shift+Enter newline. */}
       <form
         onSubmit={handleSubmit}
-        className="flex items-center gap-2 p-3 border-t border-neutral-800 min-w-0"
+        className="flex items-end gap-2 p-3 border-t border-neutral-800 min-w-0"
       >
-        <Input
-          data-chat-input
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Describe what to edit..."
-          disabled={isChatLoading}
-          className="flex-1 min-w-0 bg-neutral-800 border-neutral-700 text-neutral-200 placeholder:text-neutral-500 focus-visible:ring-blue-500/50 text-sm"
-        />
+        <div className="flex-1 min-w-0 relative">
+          <textarea
+            ref={textareaRef}
+            data-chat-input
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                handleSubmit();
+              }
+            }}
+            placeholder="Describe what to edit…  (Shift+Enter for newline)"
+            disabled={isChatLoading}
+            rows={1}
+            className="w-full resize-none rounded-md bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 disabled:opacity-60 leading-relaxed min-h-[36px] max-h-[160px] overflow-y-auto"
+          />
+        </div>
         {isChatLoading ? (
           <Button
             type="button"
@@ -298,6 +307,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
             size="icon"
             disabled={!inputValue.trim()}
             className="h-9 w-9 bg-blue-600 hover:bg-blue-500 text-white shrink-0"
+            title="Send (Enter)"
           >
             <svg
               width="16"

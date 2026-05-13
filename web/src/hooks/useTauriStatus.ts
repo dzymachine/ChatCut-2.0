@@ -7,22 +7,18 @@
 
 import { useEffect, useState } from "react";
 import { isTauri, checkFFmpeg } from "@/lib/tauri/bridge";
-import { checkBackendHealth } from "@/lib/ai/client";
 
 export interface TauriStatus {
   /** Whether we're running inside the Tauri desktop shell */
   isDesktop: boolean;
   /** FFmpeg availability — null if not checked yet */
   ffmpeg: { available: boolean; version: string } | null;
-  /** AI backend availability */
-  backendConnected: boolean | null;
 }
 
 export function useTauriStatus() {
   const [status, setStatus] = useState<TauriStatus>({
     isDesktop: false,
     ffmpeg: null,
-    backendConnected: null,
   });
 
   useEffect(() => {
@@ -45,19 +41,6 @@ export function useTauriStatus() {
           }));
         });
     }
-
-    // Check backend health
-    checkBackendHealth().then((healthy) => {
-      setStatus((s) => ({ ...s, backendConnected: healthy }));
-    });
-
-    // Re-check backend every 30 seconds
-    const interval = setInterval(async () => {
-      const healthy = await checkBackendHealth();
-      setStatus((s) => ({ ...s, backendConnected: healthy }));
-    }, 30000);
-
-    return () => clearInterval(interval);
   }, []);
 
   return status;

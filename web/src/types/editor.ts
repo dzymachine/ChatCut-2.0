@@ -206,6 +206,13 @@ export const DEFAULT_PLAYBACK: PlaybackState = {
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
+/** A tool invocation rendered inline under an assistant message. */
+export interface ToolCallInfo {
+  toolName: string;
+  args?: Record<string, unknown>;
+  result?: { success: boolean; data?: unknown; error?: string };
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -213,6 +220,9 @@ export interface ChatMessage {
   timestamp: number;
   /** If the assistant message triggered editing actions, store them here. */
   actions?: EditAction[];
+  /** Tool calls made while producing this assistant message. Persisted so
+   *  cards survive remount (floating-mode toggle, HMR, route changes). */
+  toolCalls?: ToolCallInfo[];
   isLoading?: boolean;
   isError?: boolean;
 }
@@ -321,6 +331,8 @@ export interface ProjectSnapshot {
   /** Captured when editHistory metadata (disabled flags, cascade tags) is mutated
    *  alongside a clip change — keeps the edit-history panel in sync with undo/redo. */
   editHistory: import('../lib/agent/types').EditNode[];
+  /** The active node in the DAG edit history — restored alongside editHistory. */
+  activeNodeId: string | null;
 }
 
 // ─── UI State ───────────────────────────────────────────────────────────────

@@ -60,6 +60,9 @@ backend/output/
 !README.md
 !LICENSE.md
 
+# Plugin build output (should never be committed)
+plugin/frontend/plugin/index.js
+
 # Plugin analysis/dev docs (gitignored)
 plugin/COMPREHENSIVE_ANALYSIS.md
 plugin/GAP_ANALYSIS_AND_ACTION_ITEMS.md

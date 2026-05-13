@@ -286,14 +286,8 @@ function handleApplyEffect(action: ApplyEffectAction, clipId?: string | null): {
     params[paramDef.id] = action.parameters[paramDef.id] ?? paramDef.default;
   }
 
-  // fade_out: when start is not explicitly provided, place the fade at
-  // the end of the clip (clipDuration - fadeDuration) instead of at t=0.
-  if (action.effectId === 'fade_out' && action.parameters.start == null && targetClip) {
-    const clipDuration = targetClip.sourceEnd - targetClip.sourceStart;
-    const fadeDuration = params.duration ?? 1.0;
-    params.start = Math.max(0, clipDuration - fadeDuration);
-  }
-
+  // Note: fade_out smart-default for `start` is centralized in
+  // `editor-store.addEffect` so both this path and the agent path benefit.
   const result = store.addEffect(targetClipId, action.effectId, params);
   if (!result) return { success: false, message: 'Failed to add effect' };
 

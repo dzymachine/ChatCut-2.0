@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 interface FloatingChatPanelProps {
   children: React.ReactNode;
   onDock: () => void;
+  title?: string;
+  storageKey?: string;
 }
 
 interface FloatState {
@@ -54,15 +56,31 @@ function readPersistedState(): FloatState {
  * the main window (that's option A's job); option C is a same-window
  * detachment so we can ship without IPC plumbing for cross-window state.
  */
-export function FloatingChatPanel({ children, onDock }: FloatingChatPanelProps) {
-  const [state, setState] = useState<FloatState>(readPersistedState);
+export function FloatingChatPanel({ children, onDock, title = "Chat", storageKey }: FloatingChatPanelProps) {
+  const resolvedKey = storageKey ?? STORAGE_KEY;
+  const [state, setState] = useState<FloatState>(() => {
+    if (typeof window === "undefined") return DEFAULT_FLOAT;
+    try {
+      const raw = window.localStorage.getItem(resolvedKey);
+      if (!raw) return DEFAULT_FLOAT;
+      const parsed = JSON.parse(raw) as Partial<FloatState>;
+      return clampToViewport({
+        x: Number.isFinite(parsed.x) ? parsed.x! : DEFAULT_FLOAT.x,
+        y: Number.isFinite(parsed.y) ? parsed.y! : DEFAULT_FLOAT.y,
+        width: Math.max(MIN_WIDTH, parsed.width ?? DEFAULT_FLOAT.width),
+        height: Math.max(MIN_HEIGHT, parsed.height ?? DEFAULT_FLOAT.height),
+      });
+    } catch {
+      return DEFAULT_FLOAT;
+    }
+  });
   const stateRef = useRef(state);
   stateRef.current = state;
 
   // Persist on change
   useEffect(() => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      window.localStorage.setItem(resolvedKey, JSON.stringify(state));
     } catch {
       // ignore quota / disabled storage
     }
@@ -131,7 +149,7 @@ export function FloatingChatPanel({ children, onDock }: FloatingChatPanelProps) 
         style={{ background: "rgb(31, 31, 31)" }}
       >
         <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
-          Chat
+          {title}
         </span>
         <button
           onClick={onDock}

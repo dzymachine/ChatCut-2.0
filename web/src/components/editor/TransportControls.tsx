@@ -13,6 +13,8 @@ export function TransportControls() {
   return (
     <MediaControlBar
       style={{
+        display: "flex",
+        width: "100%",
         background: "rgb(23, 23, 23)",
         borderTop: "1px solid rgb(38, 38, 38)",
         padding: "8px 12px",

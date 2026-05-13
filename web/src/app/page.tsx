@@ -26,6 +26,7 @@ export default function EditorPage() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isChatFloating, setIsChatFloating] = useState(false);
+  const [isHistoryFloating, setIsHistoryFloating] = useState(false);
   const tauriStatus = useTauriStatus();
 
   // Persist popout state across reloads.
@@ -33,6 +34,8 @@ export default function EditorPage() {
     try {
       const raw = window.localStorage.getItem("chatcut.chatFloating");
       if (raw === "true") setIsChatFloating(true);
+      const rawH = window.localStorage.getItem("chatcut.historyFloating");
+      if (rawH === "true") setIsHistoryFloating(true);
     } catch {
       // ignore
     }
@@ -40,6 +43,7 @@ export default function EditorPage() {
   useEffect(() => {
     try {
       window.localStorage.setItem("chatcut.chatFloating", String(isChatFloating));
+      window.localStorage.setItem("chatcut.historyFloating", String(isHistoryFloating));
     } catch {
       // ignore
     }
@@ -188,14 +192,18 @@ export default function EditorPage() {
                 </PanelGroup>
               )}
             </Panel>
-            <PanelResizeHandle className="w-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-col-resize" />
 
-            {/* Edit History — 25% default, can collapse */}
-            <Panel defaultSize={25} minSize={5} maxSize={40} collapsible collapsedSize={0}>
-              <div className="h-full border-l border-neutral-800 overflow-auto">
-                <EditHistoryPanel />
-              </div>
-            </Panel>
+            {/* Edit History — 25% default, can collapse; hidden when floating */}
+            {!isHistoryFloating && (
+              <>
+                <PanelResizeHandle className="w-1.5 bg-neutral-800 hover:bg-blue-500/50 active:bg-blue-500/70 transition-colors cursor-col-resize" />
+                <Panel defaultSize={25} minSize={5} maxSize={40} collapsible collapsedSize={0}>
+                  <div className="h-full border-l border-neutral-800 overflow-auto">
+                    <EditHistoryPanel onPopOut={() => setIsHistoryFloating(true)} />
+                  </div>
+                </Panel>
+              </>
+            )}
           </PanelGroup>
         </Panel>
 
@@ -212,6 +220,17 @@ export default function EditorPage() {
       {isChatFloating && (
         <FloatingChatPanel onDock={() => setIsChatFloating(false)}>
           <ChatPanel isFloating />
+        </FloatingChatPanel>
+      )}
+
+      {/* Floating Edit History Panel */}
+      {isHistoryFloating && (
+        <FloatingChatPanel
+          onDock={() => setIsHistoryFloating(false)}
+          title="Edit History"
+          storageKey="chatcut.historyFloat"
+        >
+          <EditHistoryPanel isFloating />
         </FloatingChatPanel>
       )}
 

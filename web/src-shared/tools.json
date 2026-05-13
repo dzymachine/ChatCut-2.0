@@ -166,6 +166,43 @@
       }
     },
     {
+      "name": "remove_effect",
+      "type": "mutation",
+      "description": "Remove an applied effect from a clip. Use this to undo an apply_effect call — pass the applied_effect_id returned by apply_effect.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip the effect is on. If omitted, uses the currently selected clip."
+        },
+        "applied_effect_id": {
+          "type": "string",
+          "description": "ID of the applied effect instance on the clip (returned by apply_effect).",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "toggle_effect",
+      "type": "mutation",
+      "description": "Enable or disable an applied effect without removing it. Useful for previewing 'before/after' or temporarily suppressing an effect.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip the effect is on. If omitted, uses the currently selected clip."
+        },
+        "applied_effect_id": {
+          "type": "string",
+          "description": "ID of the applied effect instance on the clip.",
+          "required": true
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "True to enable the effect, false to disable it.",
+          "required": true
+        }
+      }
+    },
+    {
       "name": "list_filter_categories",
       "type": "introspection",
       "description": "List all FFmpeg filter categories with their filter counts. Use this to discover what kinds of filters are available before browsing specific categories.",

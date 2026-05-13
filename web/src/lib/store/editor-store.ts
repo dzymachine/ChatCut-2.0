@@ -57,7 +57,7 @@ import {
   DEFAULT_UI_STATE,
   DEFAULT_TIMELINE_STATE,
 } from '@/types/editor';
-import type { EditNode } from '@/lib/agent/types';
+import type { EditNode, EditNodeSnapshot } from '@/lib/agent/types';
 import { createDefaultEffects, effectsToTransform } from '@/lib/effects/transform-bridge';
 import { getEffectDescriptor } from '@/lib/effects/registry';
 
@@ -93,6 +93,7 @@ export interface EditorStore {
 
   // ── Edit History (Agent) ──
   editHistory: EditNode[];
+  activeNodeId: string | null;
 
   // ── Project Actions ──
   initProject: (name: string, width: number, height: number, fps: number) => void;
@@ -166,7 +167,8 @@ export interface EditorStore {
   cancelUndoBatch: () => void;
 
   // ── Edit History (Agent) ──
-  appendEditNode: (node: Omit<EditNode, 'id' | 'createdAt' | 'parentId'>) => string;
+  appendEditNode: (node: Omit<EditNode, 'id' | 'createdAt' | 'parentId' | 'snapshot'>) => string;
+  activateNode: (nodeId: string) => void;
   rollbackToNode: (nodeId: string) => void;
   updateEditNodeSummary: (nodeId: string, summary: string) => void;
   toggleEditNode: (nodeId: string) => void;
@@ -251,6 +253,7 @@ function createStore() {
   redoStack: [],
   _undoBatch: null,
   editHistory: [],
+  activeNodeId: null,
 
   // ── Project Actions ──
 
@@ -264,6 +267,7 @@ function createStore() {
       chatMessages: [],
       undoStack: [],
       redoStack: [],
+      activeNodeId: null,
     });
   },
 
@@ -621,12 +625,31 @@ function createStore() {
     // parameters: {}, which downstream consumers read as amount=0 (no visible
     // effect). Single-parameter effects in particular are unusable otherwise.
     const descriptor = getEffectDescriptor(effectId);
-    const resolvedParameters: Record<string, number> = { ...(parameters ?? {}) };
+    const userProvided = parameters ?? {};
+    const resolvedParameters: Record<string, number> = { ...userProvided };
     if (descriptor) {
       for (const paramDef of descriptor.parameters) {
         if (resolvedParameters[paramDef.id] === undefined && paramDef.default !== undefined) {
           resolvedParameters[paramDef.id] = paramDef.default as number;
         }
+      }
+    }
+
+    // fade_out smart default: when the caller didn't specify `start`, place
+    // the fade at the END of the clip so a request for "fade out the last 1s"
+    // produces start = clipDuration - duration, not start = 0. Applies to
+    // both the LLM agent path (tool-registry) and the action-mapper path.
+    if (effectId === 'fade_out' && userProvided.start === undefined) {
+      const state = get();
+      let targetClip: Clip | undefined;
+      for (const track of state.project.tracks) {
+        targetClip = track.clips.find((c) => c.id === clipId);
+        if (targetClip) break;
+      }
+      if (targetClip) {
+        const clipDuration = targetClip.sourceEnd - targetClip.sourceStart;
+        const fadeDuration = resolvedParameters.duration ?? 1.0;
+        resolvedParameters.start = Math.max(0, clipDuration - fadeDuration);
       }
     }
 
@@ -1516,6 +1539,9 @@ function createStore() {
     if (command.previousState.editHistory) {
       updates.editHistory = command.previousState.editHistory;
     }
+    if (command.previousState.activeNodeId !== undefined) {
+      (updates as Record<string, unknown>).activeNodeId = command.previousState.activeNodeId;
+    }
 
     set({
       ...updates,
@@ -1548,6 +1574,9 @@ function createStore() {
     if (command.nextState.editHistory) {
       updates.editHistory = command.nextState.editHistory;
     }
+    if (command.nextState.activeNodeId !== undefined) {
+      (updates as Record<string, unknown>).activeNodeId = command.nextState.activeNodeId;
+    }
 
     set({
       ...updates,
@@ -1556,8 +1585,25 @@ function createStore() {
     });
   },
 
-  canUndo: () => get().undoStack.length > 0,
-  canRedo: () => get().redoStack.length > 0,
+  canUndo: () => {
+    const state = get();
+    // DAG-aware: can undo if active node has a parent
+    if (state.activeNodeId) {
+      const activeNode = state.editHistory.find(n => n.id === state.activeNodeId);
+      if (activeNode?.parentId) return true;
+    }
+    return state.undoStack.length > 0;
+  },
+
+  canRedo: () => {
+    const state = get();
+    // DAG-aware: can redo if active node has children
+    if (state.activeNodeId) {
+      const hasChildren = state.editHistory.some(n => n.parentId === state.activeNodeId);
+      if (hasChildren) return true;
+    }
+    return state.redoStack.length > 0;
+  },
 
   beginUndoBatch: (description) => {
     const state = get();
@@ -1616,13 +1662,15 @@ function createStore() {
   appendEditNode: (node) => {
     const id = uuid();
     const state = get();
-    const parentId = state.editHistory.length > 0
-      ? state.editHistory[state.editHistory.length - 1].id
-      : null;
+    const snapshot: EditNodeSnapshot = {
+      tracks: structuredClone(state.project.tracks),
+      playback: structuredClone(state.playback),
+    };
     const fullNode: EditNode = {
       ...node,
       id,
-      parentId,
+      parentId: state.activeNodeId,
+      snapshot,
       createdAt: Date.now(),
     };
     set((s) => {
@@ -1653,50 +1701,45 @@ function createStore() {
               // version corresponds to the batch's begin point. Otherwise
               // capture the pre-append history.
               editHistory: lastCmd.previousState.editHistory ?? s.editHistory,
+              activeNodeId: lastCmd.previousState.activeNodeId ?? s.activeNodeId,
             },
             nextState: {
               ...lastCmd.nextState,
               editHistory: newEditHistory,
+              activeNodeId: id,
             },
           },
         ];
       }
 
-      return { editHistory: newEditHistory, undoStack: newUndoStack };
+      return { editHistory: newEditHistory, undoStack: newUndoStack, activeNodeId: id };
     });
     return id;
   },
 
-  rollbackToNode: (nodeId) => {
+  activateNode: (nodeId) => {
     const state = get();
-    const nodeIndex = state.editHistory.findIndex((n) => n.id === nodeId);
-    if (nodeIndex === -1) return;
+    const node = state.editHistory.find((n) => n.id === nodeId);
+    if (!node) return;
 
-    const node = state.editHistory[nodeIndex];
-    const command = state.undoStack[node.snapshotIndex];
-    if (!command) return;
-
-    // Restore the state AFTER this edit was applied (nextState).
-    const updates: Partial<EditorStore> = {};
-    if (command.nextState.tracks) {
-      updates.project = {
+    set({
+      project: {
         ...state.project,
-        tracks: command.nextState.tracks,
+        tracks: structuredClone(node.snapshot.tracks),
         composition: {
           ...state.project.composition,
-          duration: calculateDuration(command.nextState.tracks),
+          duration: calculateDuration(node.snapshot.tracks),
         },
-      };
-    }
-    if (command.nextState.playback) {
-      updates.playback = command.nextState.playback;
-    }
-
-    // Truncate editHistory to include only nodes up to and including this one
-    set({
-      ...updates,
-      editHistory: state.editHistory.slice(0, nodeIndex + 1),
+      },
+      playback: structuredClone(node.snapshot.playback),
+      activeNodeId: nodeId,
+      // DO NOT truncate editHistory — branches are preserved
     });
+  },
+
+  rollbackToNode: (nodeId) => {
+    // Backward compat wrapper
+    get().activateNode(nodeId);
   },
 
   updateEditNodeSummary: (nodeId, summary) => {
@@ -1869,7 +1912,10 @@ function isStoreShapeValid(store: ReturnType<typeof createStore>): boolean {
       typeof s.timeline?.pixelsPerSecond === 'number' &&
       typeof s.setSelectedClip === 'function' &&
       typeof s.toggleClipSelection === 'function' &&
-      Array.isArray(s.editHistory)
+      Array.isArray(s.editHistory) &&
+      (s.editHistory.length === 0 || 'snapshot' in s.editHistory[0]) &&
+      'activeNodeId' in s &&
+      (s.activeNodeId === null || typeof s.activeNodeId === 'string')
     );
   } catch {
     return false;

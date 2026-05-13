@@ -52,27 +52,17 @@ export async function executeToolRaw(call: ToolCall): Promise<ToolResult> {
  * Execute a mutation tool and record it in the edit history.
  * Returns both the ToolResult and the generated edit node id (if mutation succeeded).
  *
- * Only records an EditNode if the undoStack actually grew (i.e. the mutation
- * was not a no-op). This prevents stale snapshotIndex values that would cause
- * rollbackToNode to restore the wrong state.
+ * The snapshot is now captured inside `appendEditNode` (full project state),
+ * so we no longer depend on undoStack growth to gate history recording.
  */
 export async function executeToolWithHistory(call: ToolCall): Promise<ToolResult & { editNodeId?: string }> {
-  // Only record edit history for mutations
   const toolDef = TOOLS.find((t) => t.name === call.name);
   const isMutation = toolDef?.type === 'mutation';
-
-  // Capture undo stack length before execution
-  const beforeLen = isMutation ? useEditorStore.getState().undoStack.length : 0;
 
   const result = await executeToolRaw(call);
   if (!result.success) return result;
   if (!isMutation) return result;
 
-  // Only append an EditNode if the undo stack actually grew
-  const afterLen = useEditorStore.getState().undoStack.length;
-  if (afterLen === beforeLen) return result; // no-op mutation — skip history
-
-  const snapshotIndex = afterLen - 1;
   const store = useEditorStore.getState();
 
   // Extract effect identifiers so EditNode can support per-effect toggle/delete
@@ -93,7 +83,6 @@ export async function executeToolWithHistory(call: ToolCall): Promise<ToolResult
   const editNodeId = store.appendEditNode({
     toolName: call.name,
     args: call.arguments,
-    snapshotIndex,
     ...(appliedEffectId && { appliedEffectId }),
     ...(targetClipId && { targetClipId }),
   });
@@ -356,6 +345,77 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
     store.updateEffect(clipId, appliedEffectId, parameters);
     store.commitUndoBatch();
     return { success: true, data: { clipId, appliedEffectId, parameters } };
+  },
+
+  remove_effect: (args) => {
+    const store = useEditorStore.getState();
+    let clipId = args.clip_id as string | undefined;
+
+    if (!clipId) {
+      const activeClip = store.getActiveClip();
+      if (!activeClip) {
+        return { success: false, error: 'No clip_id provided and no clip is currently selected.' };
+      }
+      clipId = activeClip.id;
+    }
+
+    if (!store.getClipById(clipId)) {
+      return { success: false, error: `Clip not found: ${clipId}` };
+    }
+
+    const appliedEffectId = args.applied_effect_id as string;
+    if (!appliedEffectId) {
+      return { success: false, error: 'Parameter "applied_effect_id" is required.' };
+    }
+
+    // Verify the effect exists on the clip before mutating, so we can return
+    // a clear error rather than silently no-op.
+    const effects = store.getClipEffects(clipId);
+    if (!effects.find((e) => e.id === appliedEffectId)) {
+      return { success: false, error: `Applied effect not found on clip: ${appliedEffectId}` };
+    }
+
+    store.beginUndoBatch('Remove effect');
+    store.removeEffect(clipId, appliedEffectId);
+    store.commitUndoBatch();
+    return { success: true, data: { clipId, appliedEffectId } };
+  },
+
+  toggle_effect: (args) => {
+    const store = useEditorStore.getState();
+    let clipId = args.clip_id as string | undefined;
+
+    if (!clipId) {
+      const activeClip = store.getActiveClip();
+      if (!activeClip) {
+        return { success: false, error: 'No clip_id provided and no clip is currently selected.' };
+      }
+      clipId = activeClip.id;
+    }
+
+    if (!store.getClipById(clipId)) {
+      return { success: false, error: `Clip not found: ${clipId}` };
+    }
+
+    const appliedEffectId = args.applied_effect_id as string;
+    if (!appliedEffectId) {
+      return { success: false, error: 'Parameter "applied_effect_id" is required.' };
+    }
+
+    const enabled = args.enabled;
+    if (typeof enabled !== 'boolean') {
+      return { success: false, error: 'Parameter "enabled" is required and must be a boolean.' };
+    }
+
+    const effects = store.getClipEffects(clipId);
+    if (!effects.find((e) => e.id === appliedEffectId)) {
+      return { success: false, error: `Applied effect not found on clip: ${appliedEffectId}` };
+    }
+
+    store.beginUndoBatch(enabled ? 'Enable effect' : 'Disable effect');
+    store.toggleEffect(clipId, appliedEffectId, enabled);
+    store.commitUndoBatch();
+    return { success: true, data: { clipId, appliedEffectId, enabled } };
   },
 
   // ── FFmpeg Filter Catalog ──

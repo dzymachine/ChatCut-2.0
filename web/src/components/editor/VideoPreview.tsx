@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useVideoEngine } from "@/hooks/useVideoEngine";
 import { useEditorStore, isVideoFile } from "@/lib/store/editor-store";
@@ -37,11 +37,26 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
     s.project.tracks.some((t) => t.clips.length > 0)
   );
 
+  const containerRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (isReady && onEngineReady) {
       onEngineReady();
     }
   }, [isReady, onEngineReady]);
+
+  // Resize canvas when the container changes size (pane drag, window resize)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isReady) return;
+    let ro: ResizeObserver | null = null;
+    import("@/lib/engine/video-engine").then(({ getVideoEngine }) => {
+      const engine = getVideoEngine();
+      ro = new ResizeObserver(() => engine.resizeCanvas());
+      ro.observe(container);
+    });
+    return () => ro?.disconnect();
+  }, [isReady]);
 
   // ── Global keyboard shortcuts ──
   useEffect(() => {
@@ -174,6 +189,7 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
     <div className="flex flex-col h-full w-full bg-neutral-950">
       {/* Video Canvas Container */}
       <div
+        ref={containerRef}
         className="relative flex items-center justify-center bg-neutral-950 overflow-hidden"
         style={{ width: "100%", flex: "1 1 0%", minHeight: 0 }}
         onDragOver={handleDragOver}
@@ -286,7 +302,12 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       {/* Media-controller + transport controls live below the canvas.
           The bridge MUST be a direct child of MediaController (media-chrome
           looks at top-level slot="media"), but it remains visually hidden. */}
+      {/* audio attribute switches media-chrome from overlay (absolute-
+          positioned controls on top of video) to inline layout — controls
+          flow normally and set the host height.  Without it the 0×0 bridge
+          element causes the controller to collapse, hiding everything. */}
       <MediaController
+        audio
         autohide="-1"
         style={{
           display: "block",
@@ -299,13 +320,6 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
           slot="media"
           tabIndex={-1}
           suppressHydrationWarning
-          style={{
-            position: "absolute",
-            width: 0,
-            height: 0,
-            overflow: "hidden",
-            pointerEvents: "none",
-          }}
         />
         <TransportControls />
       </MediaController>

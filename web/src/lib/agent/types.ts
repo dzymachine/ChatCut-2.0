@@ -5,6 +5,8 @@
  * edit history tree that enables rollback/branching.
  */
 
+import type { Track, PlaybackState } from '@/types/editor';
+
 // ─── Tool Call / Result ────────────────────────────────────────────────────────
 
 /** A single tool invocation from the LLM. */
@@ -22,12 +24,18 @@ export interface ToolResult {
 
 // ─── Edit History ──────────────────────────────────────────────────────────────
 
+/** Snapshot of the full project state at a point in the edit history. */
+export interface EditNodeSnapshot {
+  tracks: Track[];
+  playback: PlaybackState;
+}
+
 /**
  * A node in the edit history DAG.
  *
  * Each mutation tool call appends one node. Introspection calls do NOT create
- * nodes. The `snapshotIndex` points into the undoStack so that `rollbackToNode`
- * can restore the project state to the point AFTER this edit was applied.
+ * nodes. The `snapshot` stores the full project state AFTER this edit was
+ * applied, enabling DAG-based rollback without dependency on the undoStack.
  */
 export interface EditNode {
   id: string;
@@ -35,8 +43,8 @@ export interface EditNode {
   toolName: string;
   args: Record<string, unknown>;
   summary?: string;
-  /** Index into the undoStack — the Command at this index is the one this edit pushed. */
-  snapshotIndex: number;
+  /** Full state AFTER this edit was applied — enables DAG rollback. */
+  snapshot: EditNodeSnapshot;
   createdAt: number;
   /** Whether this edit is currently disabled (effect toggled off). */
   disabled?: boolean;
