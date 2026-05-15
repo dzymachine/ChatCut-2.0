@@ -195,6 +195,12 @@ export class VideoEngine {
   init(canvas: HTMLCanvasElement): void {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false })!;
+    // Canvas bitmap is sized to composition.{width,height} (1920×1080 default)
+    // and CSS-scaled by VideoPreview to fit the panel. The browser default
+    // smoothingQuality of 'low' produces a visibly soft/blurry downscale.
+    // 'high' uses higher-quality resampling — fixes blurry preview.
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = 'high';
 
     // If already initialized (e.g. after HMR re-mount), keep the existing
     // video pool and its loaded sources — just restart the render loop.
@@ -330,8 +336,18 @@ export class VideoEngine {
     const state = this.getState();
     const { width, height } = state.project.composition;
 
-    this.canvas.width = width;
-    this.canvas.height = height;
+    // Keep the backing store at composition dimensions so all drawing
+    // code (centering, transforms, drawImage) uses a consistent
+    // coordinate system.  CSS object-fit:contain on the <canvas>
+    // handles display scaling without blurriness.
+    if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+    }
+
+    // Force a re-render so the current frame redraws into the
+    // (potentially re-sized) canvas immediately.
+    this.renderFrame();
   }
 
   // ─── Playback Control ─────────────────────────────────────────────────
@@ -699,27 +715,44 @@ export class VideoEngine {
 
         const { transform } = clip;
 
-        // Compute fade opacity from transition effects (fade_in / fade_out).
-        // These are time-based so they can't be baked into the static transform.
+        // Compute fade opacity from transition effects.
+        // Collect all fade windows, sort by start time, and evaluate in order.
+        // A fade_in after a fade_out will correctly bring opacity back up.
         let effectOpacity = transform.opacity;
         const clipTime = state.playback.currentTime - clip.timelineStart;
+        const clipDuration = clip.sourceEnd - clip.sourceStart;
 
+        const fades: Array<{ type: 'in' | 'out'; start: number; end: number }> = [];
         for (const effect of clip.effects) {
           if (!effect.enabled) continue;
           if (effect.effectId === 'fade_in') {
-            const duration = effect.parameters.duration ?? 1.0;
-            if (duration > 0 && clipTime >= 0 && clipTime < duration) {
-              effectOpacity *= clipTime / duration;
-            }
+            const dur = effect.parameters.duration ?? 1.0;
+            const start = effect.parameters.start ?? 0;
+            if (dur > 0) fades.push({ type: 'in', start, end: start + dur });
           } else if (effect.effectId === 'fade_out') {
-            const duration = effect.parameters.duration ?? 1.0;
-            const clipDuration = clip.sourceEnd - clip.sourceStart;
-            const fadeStart = effect.parameters.start ?? Math.max(0, clipDuration - duration);
-            if (duration > 0 && clipTime >= fadeStart) {
-              const progress = Math.min(1, (clipTime - fadeStart) / duration);
-              effectOpacity *= 1 - progress;
+            const dur = effect.parameters.duration ?? 1.0;
+            const start = effect.parameters.start ?? Math.max(0, clipDuration - dur);
+            if (dur > 0) fades.push({ type: 'out', start, end: start + dur });
+          }
+        }
+
+        if (fades.length > 0) {
+          // Sort by start time; ties broken by fade_out first (out before in at same point)
+          fades.sort((a, b) => a.start - b.start || (a.type === 'out' ? -1 : 1));
+
+          // Find which fade window the current time falls in
+          let fadeOpacity = 1.0;
+          for (const fade of fades) {
+            if (clipTime >= fade.start && clipTime < fade.end) {
+              const progress = (clipTime - fade.start) / (fade.end - fade.start);
+              fadeOpacity = fade.type === 'in' ? progress : 1 - progress;
+            } else if (clipTime >= fade.end && fade.type === 'out') {
+              fadeOpacity = 0;
+            } else if (clipTime >= fade.end && fade.type === 'in') {
+              fadeOpacity = 1;
             }
           }
+          effectOpacity *= fadeOpacity;
         }
 
         ctx.save();
@@ -775,6 +808,35 @@ export class VideoEngine {
           drawWidth,
           drawHeight
         );
+
+        // Vignette is an FFmpeg-only filter (no CSS equivalent), so it's
+        // applied here as a radial gradient overlay on top of the drawn
+        // frame. Drawn in the same transformed space so the vignette
+        // tracks scale/rotation/position. The 'angle' parameter mirrors
+        // FFmpeg's vignette angle: 0 = no darkening, PI/2 ≈ heavy.
+        const vignetteEffect = clip.effects.find(
+          (e) => e.enabled && e.effectId === 'vignette'
+        );
+        if (vignetteEffect) {
+          const angle = vignetteEffect.parameters.angle ?? 0.5;
+          // Normalize angle (0..PI/2) into a darkening intensity (0..1).
+          const intensity = Math.min(1, Math.max(0, angle / (Math.PI / 2)));
+          if (intensity > 0) {
+            const cx = 0;
+            const cy = 0;
+            const innerR = Math.min(drawWidth, drawHeight) * 0.25;
+            const outerR = Math.hypot(drawWidth, drawHeight) / 2;
+            const gradient = ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
+            gradient.addColorStop(0, 'rgba(0,0,0,0)');
+            gradient.addColorStop(1, `rgba(0,0,0,${intensity})`);
+            // Clear ctx.filter so the gradient itself isn't sepia-tinted etc.
+            const prevFilter = ctx.filter;
+            ctx.filter = 'none';
+            ctx.fillStyle = gradient;
+            ctx.fillRect(-drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+            ctx.filter = prevFilter;
+          }
+        }
 
         ctx.restore();
       }

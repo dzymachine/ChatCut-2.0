@@ -98,6 +98,11 @@ export interface Clip {
   // Effects are applied in order (first to last).
   effects: import('./effects').AppliedEffect[];
 
+  // FFmpeg filter recipe — composed by the agent via the recipe builder.
+  // When present, the compiled recipe filters are appended after legacy effects
+  // in the export pipeline.
+  recipe?: import('../../src-shared/recipe').Recipe;
+
   // Future: per-clip transitions, keyframes
   transitions: Transition[];
 }
@@ -200,7 +205,13 @@ export const DEFAULT_PLAYBACK: PlaybackState = {
 // ─── Chat / AI ──────────────────────────────────────────────────────────────
 
 export type ChatRole = 'user' | 'assistant' | 'system';
-export type ChatMode = 'effects' | 'generation';
+
+/** A tool invocation rendered inline under an assistant message. */
+export interface ToolCallInfo {
+  toolName: string;
+  args?: Record<string, unknown>;
+  result?: { success: boolean; data?: unknown; error?: string };
+}
 
 export interface ChatMessage {
   id: string;
@@ -209,6 +220,9 @@ export interface ChatMessage {
   timestamp: number;
   /** If the assistant message triggered editing actions, store them here. */
   actions?: EditAction[];
+  /** Tool calls made while producing this assistant message. Persisted so
+   *  cards survive remount (floating-mode toggle, HMR, route changes). */
+  toolCalls?: ToolCallInfo[];
   isLoading?: boolean;
   isError?: boolean;
 }
@@ -314,6 +328,11 @@ export interface Command {
 export interface ProjectSnapshot {
   tracks: Track[];
   playback: PlaybackState;
+  /** Captured when editHistory metadata (disabled flags, cascade tags) is mutated
+   *  alongside a clip change — keeps the edit-history panel in sync with undo/redo. */
+  editHistory: import('../lib/agent/types').EditNode[];
+  /** The active node in the DAG edit history — restored alongside editHistory. */
+  activeNodeId: string | null;
 }
 
 // ─── UI State ───────────────────────────────────────────────────────────────

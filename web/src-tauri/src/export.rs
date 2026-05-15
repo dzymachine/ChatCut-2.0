@@ -34,6 +34,9 @@ pub struct ExportClip {
     pub timeline_start: f64,
     /// Effect stack
     pub effects: Vec<AppliedEffect>,
+    /// Optional recipe filter graph
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<crate::recipe::Recipe>,
 }
 
 /// Export settings
@@ -384,11 +387,21 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
             input_a, clip.source_start, clip.source_end
         );
 
-        // 2. Video effects
+        // 2. Video effects (legacy effect stack)
         let video_effects = build_effect_filters(&clip.effects);
         for f in &video_effects {
             video_chain.push(',');
             video_chain.push_str(f);
+        }
+
+        // 2b. Recipe filters (appended after legacy effects)
+        if let Some(ref recipe) = clip.recipe {
+            if let Ok(recipe_filters) = crate::recipe::compile_recipe(recipe) {
+                if !recipe_filters.is_empty() {
+                    video_chain.push(',');
+                    video_chain.push_str(&recipe_filters);
+                }
+            }
         }
 
         // 3. Scale to output resolution
