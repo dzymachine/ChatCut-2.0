@@ -100,6 +100,51 @@ export async function processPrompt(
   }
 }
 
+export interface ProcessMediaResponse {
+  action: string | null;
+  message: string;
+  error?: string;
+  parameters?: Record<string, any>;
+  output_path?: string;
+  original_path?: string;
+}
+
+/**
+ * Send a video file and prompt to the AI backend for generation/modification.
+ */
+export async function processMedia(
+  filePath: string,
+  prompt: string
+): Promise<ProcessMediaResponse> {
+  try {
+    const response = await fetch(`${getApiBase()}/process-media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath, prompt }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      return { action: null, message: '', error: `Media processing failed: ${response.status} — ${error}` };
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      return {
+        action: null,
+        message: '',
+        error: 'Cannot connect to backend. Make sure the ChatCut backend is running on port 3001.',
+      };
+    }
+    return {
+      action: null,
+      message: '',
+      error: `Request failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+  }
+}
+
 /**
  * Ask a question about video editing (uses the question service).
  */

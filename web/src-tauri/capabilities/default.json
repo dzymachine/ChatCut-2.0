@@ -25,7 +25,8 @@
         { "path": "$APPDATA/**" },
         { "path": "$APPCONFIG/**" },
         { "path": "$TEMP/**" },
-        { "path": "/tmp/**" }
+        { "path": "/tmp/**" },
+        { "path": "**" }
       ]
     }
   ]

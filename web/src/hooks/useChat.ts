@@ -8,7 +8,7 @@
 
 import { useState, useCallback } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
-import { processPrompt, checkBackendHealth } from "@/lib/ai/client";
+import { processPrompt, checkBackendHealth, processMedia } from "@/lib/ai/client";
 import { mapAIActions } from "@/lib/ai/action-mapper";
 import { executeActions } from "@/lib/commands/command-handler";
 
@@ -44,13 +44,85 @@ export function useChat() {
       // Add user message
       addChatMessage({ role: "user", content: trimmed });
 
-      // Generation mode is intentionally separated but not implemented yet.
+      // Generation mode
       if (chatMode === "generation") {
-        addChatMessage({
+        const store = useEditorStore.getState();
+        const activeClip = store.getActiveClip();
+
+        if (!activeClip) {
+          addChatMessage({
+            role: "assistant",
+            content: "Please select a video clip on the timeline first.",
+          });
+          return;
+        }
+
+        const mediaFile = store.mediaFiles.get(activeClip.sourceFileId);
+        // The backend needs a physical file path to upload to Runway ML.
+        const filePath = mediaFile?.nativePath;
+
+        if (!filePath) {
+          addChatMessage({
+            role: "assistant",
+            content: "Cannot process this file. Please make sure you are using the Desktop app (Tauri) to grant local file access.",
+          });
+          return;
+        }
+
+        const assistantMsgId = addChatMessage({
           role: "assistant",
-          content:
-            "Generation mode is set up, but AI generation is not implemented yet. Switch to Effects mode to apply edits.",
+          content: "Generating new clip with Runway ML... this may take a minute.",
+          isLoading: true,
         });
+
+        setChatLoading(true);
+
+        try {
+          const result = await processMedia(filePath, trimmed);
+
+          if (result.error) {
+            updateChatMessage(assistantMsgId, {
+              content: result.error,
+              isLoading: false,
+              isError: true,
+            });
+            return;
+          }
+
+          if (result.output_path) {
+            // Load the newly generated file into the project
+            const newMediaFile = await store.addMediaFileFromPath(result.output_path, "AI_Generated.mp4");
+            
+            // Swap out the timeline clip to use the new media source
+            store.replaceClipMedia(activeClip.id, newMediaFile);
+
+            updateChatMessage(assistantMsgId, {
+              content: "✓ Successfully generated and replaced the clip on the timeline.",
+              isLoading: false,
+            });
+          } else {
+            updateChatMessage(assistantMsgId, {
+              content: "Failed to generate video: no output path returned from backend.",
+              isLoading: false,
+              isError: true,
+            });
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error 
+            ? error.message 
+            : typeof error === 'string' 
+              ? error 
+              : "Unknown error";
+              
+          updateChatMessage(assistantMsgId, {
+            content: `Error: ${errorMessage}`,
+            isLoading: false,
+            isError: true,
+          });
+        } finally {
+          setChatLoading(false);
+        }
+
         return;
       }
 
@@ -131,8 +203,14 @@ export function useChat() {
             : undefined,
         });
       } catch (error) {
+        const errorMessage = error instanceof Error 
+          ? error.message 
+          : typeof error === 'string' 
+            ? error 
+            : "Unknown error";
+            
         updateChatMessage(assistantMsgId, {
-          content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+          content: `Error: ${errorMessage}`,
           isLoading: false,
           isError: true,
         });

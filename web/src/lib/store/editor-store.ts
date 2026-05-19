@@ -92,6 +92,7 @@ export interface EditorStore {
   addMediaFileFromPath: (filePath: string, fileName: string) => Promise<MediaFile>;
   addClipFromMedia: (mediaFile: MediaFile, trackId?: string, timelineStart?: number) => Clip;
   removeClip: (clipId: string) => void;
+  replaceClipMedia: (clipId: string, newMediaFile: MediaFile) => void;
 
   // ── Transform Actions ──
   updateTransform: (clipId: string, transform: Partial<Transform>) => void;
@@ -533,6 +534,51 @@ function createStore() {
           : { playback: { ...state.playback, isPlaying: false, currentTime: 0 } }),
       };
     });
+  },
+
+  replaceClipMedia: (clipId: string, newMediaFile: MediaFile) => {
+    const prevState = get();
+    
+    set((state) => {
+      const newTracks = state.project.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (clip.id === clipId) {
+            return {
+              ...clip,
+              sourceFileId: newMediaFile.id,
+              // Reset source boundaries to the new media length
+              sourceStart: 0,
+              sourceEnd: newMediaFile.duration,
+            };
+          }
+          return clip;
+        }),
+      }));
+
+      const duration = calculateDuration(newTracks);
+
+      return {
+        project: {
+          ...state.project,
+          tracks: newTracks,
+          composition: { ...state.project.composition, duration },
+          updatedAt: Date.now(),
+        },
+      };
+    });
+
+    get().pushUndo({
+      description: 'Replace media',
+      previousState: { tracks: prevState.project.tracks, playback: prevState.playback },
+      nextState: { tracks: get().project.tracks, playback: get().playback },
+    });
+
+    // Request the engine to load the new source if it's the active clip
+    const activeClip = get().getActiveClip();
+    if (activeClip?.id === clipId) {
+      getVideoEngine().loadSource(newMediaFile.previewUrl, newMediaFile.id).catch(console.error);
+    }
   },
 
   // ── Transform Actions ──

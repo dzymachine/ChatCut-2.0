@@ -92,7 +92,7 @@ export function ChatPanel() {
                 <p>
                   {chatMode === "effects"
                     ? "Drop a video and try saying:"
-                    : "Generation mode is available to switch to, but generation actions are not implemented yet."}
+                    : "Select a clip and try generation prompts like:"}
                 </p>
                 <div className="space-y-1.5">
                   {(chatMode === "effects"
