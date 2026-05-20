@@ -181,15 +181,15 @@ const defaultTrackProps = {
 /**
  * Creates the default project with 3 video tracks and 3 audio tracks.
  *
- * Track order in the array matches the Premiere Pro visual layout (top-to-bottom):
- *   V3 (topmost video — highest compositing priority / foreground)
+ * Track order in the array matches the visual layout (top-to-bottom):
+ *   V1 (topmost video — highest compositing priority / foreground)
  *   V2
- *   V1 (bottommost video — lowest compositing priority / background)
+ *   V3 (bottommost video — lowest compositing priority / background)
  *   A1 (topmost audio — default audio track)
  *   A2
  *   A3 (bottommost audio)
  *
- * Clips default to V1 and A1 (the "main" tracks).
+ * Clips default to V3 and A1 (the "main" tracks).
  */
 const createDefaultProject = (): Project => ({
   id: uuid(),
@@ -201,9 +201,9 @@ const createDefaultProject = (): Project => ({
     duration: 0,
   },
   tracks: [
-    { id: uuid(), type: 'video', label: 'V3', ...defaultTrackProps },
-    { id: uuid(), type: 'video', label: 'V2', ...defaultTrackProps },
     { id: uuid(), type: 'video', label: 'V1', ...defaultTrackProps },
+    { id: uuid(), type: 'video', label: 'V2', ...defaultTrackProps },
+    { id: uuid(), type: 'video', label: 'V3', ...defaultTrackProps },
     { id: uuid(), type: 'audio', label: 'A1', ...defaultTrackProps },
     { id: uuid(), type: 'audio', label: 'A2', ...defaultTrackProps },
     { id: uuid(), type: 'audio', label: 'A3', ...defaultTrackProps },
@@ -400,11 +400,18 @@ function createStore() {
       transitions: [],
     };
 
-    // For video files, also create a linked audio clip on the audio track
+    // For video files, also create a linked audio clip on the corresponding audio track
     let audioClip: Clip | null = null;
+    let audioTrack: Track | null = null;
     if (mediaFile.type === 'video') {
-      const audioTrack = state.project.tracks.find((t) => t.type === 'audio');
-      if (audioTrack) {
+      // Find the audio track that corresponds to the target video track's position
+      const videoTracks = state.project.tracks.filter((t) => t.type === 'video');
+      const audioTracks = state.project.tracks.filter((t) => t.type === 'audio');
+      const targetVideoIndex = videoTracks.findIndex((t) => t.id === targetTrack.id);
+      
+      // Match audio track to video track by index (V1→A1, V2→A2, V3→A3)
+      if (targetVideoIndex >= 0 && targetVideoIndex < audioTracks.length) {
+        audioTrack = audioTracks[targetVideoIndex];
         audioClip = {
           id: uuid(),
           type: 'audio',
@@ -421,7 +428,6 @@ function createStore() {
     }
 
     set((state) => {
-      const audioTrack = state.project.tracks.find((t) => t.type === 'audio');
       const newTracks = state.project.tracks.map((track) => {
         if (track.id === targetTrack.id) {
           return { ...track, clips: [...track.clips, clip] };
