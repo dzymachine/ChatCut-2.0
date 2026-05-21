@@ -43,7 +43,7 @@ import {
   type MediaFile,
   type PlaybackState,
   type ChatMessage,
-  type ChatMode,
+
   type UIState,
   type TimelineState,
   type TimelineTool,
@@ -57,7 +57,9 @@ import {
   DEFAULT_UI_STATE,
   DEFAULT_TIMELINE_STATE,
 } from '@/types/editor';
+import type { EditNode, EditNodeSnapshot } from '@/lib/agent/types';
 import { createDefaultEffects, effectsToTransform } from '@/lib/effects/transform-bridge';
+import { getEffectDescriptor } from '@/lib/effects/registry';
 
 // ─── Store Interface ────────────────────────────────────────────────────────
 
@@ -71,9 +73,7 @@ export interface EditorStore {
 
   // ── Chat ──
   chatMessages: ChatMessage[];
-  chatConversations: Record<ChatMode, ChatMessage[]>;
   isChatLoading: boolean;
-  chatMode: ChatMode;
 
   // ── UI ──
   ui: UIState;
@@ -84,7 +84,16 @@ export interface EditorStore {
   // ── Undo/Redo ──
   undoStack: Command[];
   redoStack: Command[];
-  _undoBatch: { description: string; snapshotTracks: Track[]; snapshotPlayback: PlaybackState } | null;
+  _undoBatch: {
+    description: string;
+    snapshotTracks: Track[];
+    snapshotPlayback: PlaybackState;
+    snapshotEditHistory: EditNode[];
+  } | null;
+
+  // ── Edit History (Agent) ──
+  editHistory: EditNode[];
+  activeNodeId: string | null;
 
   // ── Project Actions ──
   initProject: (name: string, width: number, height: number, fps: number) => void;
@@ -104,6 +113,7 @@ export interface EditorStore {
   updateEffect: (clipId: string, appliedEffectId: string, parameters: Record<string, number>) => void;
   toggleEffect: (clipId: string, appliedEffectId: string, enabled: boolean) => void;
   getClipEffects: (clipId: string) => AppliedEffect[];
+  setClipRecipe: (clipId: string, recipe: import('../../../src-shared/recipe').Recipe) => void;
 
   // ── Timeline Actions ──
   setTimelineZoom: (pixelsPerSecond: number) => void;
@@ -138,7 +148,6 @@ export interface EditorStore {
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => string;
   updateChatMessage: (id: string, updates: Partial<ChatMessage>) => void;
   setChatLoading: (loading: boolean) => void;
-  setChatMode: (mode: ChatMode) => void;
   clearChat: () => void;
 
   // ── UI Actions ──
@@ -156,6 +165,14 @@ export interface EditorStore {
   beginUndoBatch: (description: string) => void;
   commitUndoBatch: () => void;
   cancelUndoBatch: () => void;
+
+  // ── Edit History (Agent) ──
+  appendEditNode: (node: Omit<EditNode, 'id' | 'createdAt' | 'parentId' | 'snapshot'>) => string;
+  activateNode: (nodeId: string) => void;
+  rollbackToNode: (nodeId: string) => void;
+  updateEditNodeSummary: (nodeId: string, summary: string) => void;
+  toggleEditNode: (nodeId: string) => void;
+  deleteEditNode: (nodeId: string) => void;
 
   // ── Helpers ──
   getActiveClip: () => Clip | null;
@@ -229,17 +246,14 @@ function createStore() {
   mediaFiles: new Map(),
   playback: { ...DEFAULT_PLAYBACK },
   chatMessages: [],
-  chatConversations: {
-    effects: [],
-    generation: [],
-  },
   isChatLoading: false,
-  chatMode: 'effects',
   ui: { ...DEFAULT_UI_STATE },
   timeline: { ...DEFAULT_TIMELINE_STATE },
   undoStack: [],
   redoStack: [],
   _undoBatch: null,
+  editHistory: [],
+  activeNodeId: null,
 
   // ── Project Actions ──
 
@@ -251,12 +265,9 @@ function createStore() {
         composition: { width, height, fps, duration: 0 },
       },
       chatMessages: [],
-      chatConversations: {
-        effects: [],
-        generation: [],
-      },
       undoStack: [],
       redoStack: [],
+      activeNodeId: null,
     });
   },
 
@@ -615,10 +626,43 @@ function createStore() {
   // ── Effect Actions ──
 
   addEffect: (clipId, effectId, parameters) => {
+    // Fill in any unspecified parameters from the effect's descriptor defaults.
+    // Without this, calling apply_effect("sepia") with no args lands with
+    // parameters: {}, which downstream consumers read as amount=0 (no visible
+    // effect). Single-parameter effects in particular are unusable otherwise.
+    const descriptor = getEffectDescriptor(effectId);
+    const userProvided = parameters ?? {};
+    const resolvedParameters: Record<string, number> = { ...userProvided };
+    if (descriptor) {
+      for (const paramDef of descriptor.parameters) {
+        if (resolvedParameters[paramDef.id] === undefined && paramDef.default !== undefined) {
+          resolvedParameters[paramDef.id] = paramDef.default as number;
+        }
+      }
+    }
+
+    // fade_out smart default: when the caller didn't specify `start`, place
+    // the fade at the END of the clip so a request for "fade out the last 1s"
+    // produces start = clipDuration - duration, not start = 0. Applies to
+    // both the LLM agent path (tool-registry) and the action-mapper path.
+    if (effectId === 'fade_out' && userProvided.start === undefined) {
+      const state = get();
+      let targetClip: Clip | undefined;
+      for (const track of state.project.tracks) {
+        targetClip = track.clips.find((c) => c.id === clipId);
+        if (targetClip) break;
+      }
+      if (targetClip) {
+        const clipDuration = targetClip.sourceEnd - targetClip.sourceStart;
+        const fadeDuration = resolvedParameters.duration ?? 1.0;
+        resolvedParameters.start = Math.max(0, clipDuration - fadeDuration);
+      }
+    }
+
     const newEffect: AppliedEffect = {
       id: uuid(),
       effectId,
-      parameters: parameters ?? {},
+      parameters: resolvedParameters,
       keyframes: [],
       enabled: true,
     };
@@ -729,6 +773,21 @@ function createStore() {
       if (clip) return clip.effects;
     }
     return [];
+  },
+
+  setClipRecipe: (clipId, recipe) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) =>
+            clip.id === clipId ? { ...clip, recipe } : clip
+          ),
+        })),
+        updatedAt: Date.now(),
+      },
+    }));
   },
 
   // ── Timeline Actions ──
@@ -1390,30 +1449,18 @@ function createStore() {
 
   addChatMessage: (message) => {
     const id = uuid();
-    const currentMode = get().chatMode;
     const newMessage = { ...message, id, timestamp: Date.now() };
     set((state) => ({
       chatMessages: [...state.chatMessages, newMessage],
-      chatConversations: {
-        ...state.chatConversations,
-        [currentMode]: [...state.chatConversations[currentMode], newMessage],
-      },
     }));
     return id;
   },
 
   updateChatMessage: (id, updates) => {
-    const currentMode = get().chatMode;
     set((state) => ({
       chatMessages: state.chatMessages.map((msg) =>
         msg.id === id ? { ...msg, ...updates } : msg
       ),
-      chatConversations: {
-        ...state.chatConversations,
-        [currentMode]: state.chatConversations[currentMode].map((msg) =>
-          msg.id === id ? { ...msg, ...updates } : msg
-        ),
-      },
     }));
   },
 
@@ -1421,22 +1468,8 @@ function createStore() {
     set({ isChatLoading: loading });
   },
 
-  setChatMode: (mode) => {
-    set((state) => ({
-      chatMode: mode,
-      chatMessages: state.chatConversations[mode],
-    }));
-  },
-
   clearChat: () => {
-    const currentMode = get().chatMode;
-    set((state) => ({
-      chatMessages: [],
-      chatConversations: {
-        ...state.chatConversations,
-        [currentMode]: [],
-      },
-    }));
+    set({ chatMessages: [] });
   },
 
   // ── UI Actions ──
@@ -1509,6 +1542,12 @@ function createStore() {
     if (command.previousState.playback) {
       updates.playback = command.previousState.playback;
     }
+    if (command.previousState.editHistory) {
+      updates.editHistory = command.previousState.editHistory;
+    }
+    if (command.previousState.activeNodeId !== undefined) {
+      (updates as Record<string, unknown>).activeNodeId = command.previousState.activeNodeId;
+    }
 
     set({
       ...updates,
@@ -1538,6 +1577,12 @@ function createStore() {
     if (command.nextState.playback) {
       updates.playback = command.nextState.playback;
     }
+    if (command.nextState.editHistory) {
+      updates.editHistory = command.nextState.editHistory;
+    }
+    if (command.nextState.activeNodeId !== undefined) {
+      (updates as Record<string, unknown>).activeNodeId = command.nextState.activeNodeId;
+    }
 
     set({
       ...updates,
@@ -1546,8 +1591,25 @@ function createStore() {
     });
   },
 
-  canUndo: () => get().undoStack.length > 0,
-  canRedo: () => get().redoStack.length > 0,
+  canUndo: () => {
+    const state = get();
+    // DAG-aware: can undo if active node has a parent
+    if (state.activeNodeId) {
+      const activeNode = state.editHistory.find(n => n.id === state.activeNodeId);
+      if (activeNode?.parentId) return true;
+    }
+    return state.undoStack.length > 0;
+  },
+
+  canRedo: () => {
+    const state = get();
+    // DAG-aware: can redo if active node has children
+    if (state.activeNodeId) {
+      const hasChildren = state.editHistory.some(n => n.parentId === state.activeNodeId);
+      if (hasChildren) return true;
+    }
+    return state.redoStack.length > 0;
+  },
 
   beginUndoBatch: (description) => {
     const state = get();
@@ -1560,6 +1622,7 @@ function createStore() {
         description,
         snapshotTracks: structuredClone(state.project.tracks),
         snapshotPlayback: structuredClone(state.playback),
+        snapshotEditHistory: structuredClone(state.editHistory),
       },
     });
   },
@@ -1571,20 +1634,24 @@ function createStore() {
 
     const afterTracks = state.project.tracks;
     const afterPlayback = state.playback;
+    const afterEditHistory = state.editHistory;
 
     const tracksChanged = JSON.stringify(batch.snapshotTracks) !== JSON.stringify(afterTracks);
     const playbackChanged = JSON.stringify(batch.snapshotPlayback) !== JSON.stringify(afterPlayback);
+    const editHistoryChanged = JSON.stringify(batch.snapshotEditHistory) !== JSON.stringify(afterEditHistory);
 
-    if (tracksChanged || playbackChanged) {
+    if (tracksChanged || playbackChanged || editHistoryChanged) {
       state.pushUndo({
         description: batch.description,
         previousState: {
           tracks: batch.snapshotTracks,
           ...(playbackChanged ? { playback: batch.snapshotPlayback } : {}),
+          ...(editHistoryChanged ? { editHistory: batch.snapshotEditHistory } : {}),
         },
         nextState: {
           tracks: structuredClone(afterTracks),
           ...(playbackChanged ? { playback: structuredClone(afterPlayback) } : {}),
+          ...(editHistoryChanged ? { editHistory: structuredClone(afterEditHistory) } : {}),
         },
       });
     }
@@ -1594,6 +1661,191 @@ function createStore() {
 
   cancelUndoBatch: () => {
     set({ _undoBatch: null });
+  },
+
+  // ── Edit History (Agent) ──
+
+  appendEditNode: (node) => {
+    const id = uuid();
+    const state = get();
+    const snapshot: EditNodeSnapshot = {
+      tracks: structuredClone(state.project.tracks),
+      playback: structuredClone(state.playback),
+    };
+    const fullNode: EditNode = {
+      ...node,
+      id,
+      parentId: state.activeNodeId,
+      snapshot,
+      createdAt: Date.now(),
+    };
+    set((s) => {
+      const newEditHistory = [...s.editHistory, fullNode];
+
+      // Amend the most recent undo Command so its previousState/nextState
+      // cover the editHistory transition this append creates. Without this,
+      // Cmd-Z restores tracks but leaves the orphaned EditNode visible in
+      // the panel — the classic "history doesn't update on undo" bug.
+      //
+      // We rely on tool-registry.executeToolWithHistory calling this
+      // immediately after the handler's commitUndoBatch, so the latest
+      // command IS the one we want to amend. If there's no command (the
+      // append happened outside a tool-invocation context), we just append
+      // without affecting undo state.
+      let newUndoStack = s.undoStack;
+      if (s.undoStack.length > 0) {
+        const lastIdx = s.undoStack.length - 1;
+        const lastCmd = s.undoStack[lastIdx];
+        newUndoStack = [
+          ...s.undoStack.slice(0, lastIdx),
+          {
+            ...lastCmd,
+            previousState: {
+              ...lastCmd.previousState,
+              // If the handler's batch already captured editHistory (e.g.
+              // toggle/delete edit-node flows), don't overwrite it — that
+              // version corresponds to the batch's begin point. Otherwise
+              // capture the pre-append history.
+              editHistory: lastCmd.previousState.editHistory ?? s.editHistory,
+              activeNodeId: lastCmd.previousState.activeNodeId ?? s.activeNodeId,
+            },
+            nextState: {
+              ...lastCmd.nextState,
+              editHistory: newEditHistory,
+              activeNodeId: id,
+            },
+          },
+        ];
+      }
+
+      return { editHistory: newEditHistory, undoStack: newUndoStack, activeNodeId: id };
+    });
+    return id;
+  },
+
+  activateNode: (nodeId) => {
+    const state = get();
+    const node = state.editHistory.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    set({
+      project: {
+        ...state.project,
+        tracks: structuredClone(node.snapshot.tracks),
+        composition: {
+          ...state.project.composition,
+          duration: calculateDuration(node.snapshot.tracks),
+        },
+      },
+      playback: structuredClone(node.snapshot.playback),
+      activeNodeId: nodeId,
+      // DO NOT truncate editHistory — branches are preserved
+    });
+  },
+
+  rollbackToNode: (nodeId) => {
+    // Backward compat wrapper
+    get().activateNode(nodeId);
+  },
+
+  updateEditNodeSummary: (nodeId, summary) => {
+    set((state) => ({
+      editHistory: state.editHistory.map((node) =>
+        node.id === nodeId ? { ...node, summary } : node
+      ),
+    }));
+  },
+
+  toggleEditNode: (nodeId) => {
+    const state = get();
+    const node = state.editHistory.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    const isEffectTool = node.toolName === 'apply_effect' || node.toolName === 'update_effect_param';
+    if (!isEffectTool || !node.appliedEffectId || !node.targetClipId) return;
+
+    const enabling = node.disabled === true;
+
+    get().beginUndoBatch(enabling ? 'Re-enable edit' : 'Disable edit');
+
+    if (node.toolName === 'apply_effect') {
+      get().toggleEffect(node.targetClipId, node.appliedEffectId, enabling);
+
+      // Cascade to all update_effect_param nodes for the same effect
+      set((s) => ({
+        editHistory: s.editHistory.map((n) => {
+          if (n.id === nodeId) {
+            return { ...n, disabled: !enabling, cascadeDisabledBy: undefined };
+          }
+          if (
+            n.toolName === 'update_effect_param' &&
+            n.appliedEffectId === node.appliedEffectId &&
+            n.targetClipId === node.targetClipId
+          ) {
+            if (!enabling) {
+              // Only cascade-disable children that aren't already disabled.
+              // Preserves a child's independent disable (cascadeDisabledBy === undefined)
+              // or a disable from a different ancestor.
+              if (!n.disabled) {
+                return { ...n, disabled: true, cascadeDisabledBy: nodeId };
+              }
+              return n;
+            }
+            // Re-enable only children this node cascaded over.
+            if (n.cascadeDisabledBy === nodeId) {
+              return { ...n, disabled: false, cascadeDisabledBy: undefined };
+            }
+          }
+          return n;
+        }),
+      }));
+    } else {
+      // update_effect_param — toggle the effect's enabled state
+      get().toggleEffect(node.targetClipId, node.appliedEffectId, enabling);
+      set((s) => ({
+        editHistory: s.editHistory.map((n) =>
+          n.id === nodeId ? { ...n, disabled: !enabling } : n
+        ),
+      }));
+    }
+
+    get().commitUndoBatch();
+  },
+
+  deleteEditNode: (nodeId) => {
+    const state = get();
+    const node = state.editHistory.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    const isEffectTool = node.toolName === 'apply_effect' || node.toolName === 'update_effect_param';
+    if (!isEffectTool || !node.appliedEffectId || !node.targetClipId) return;
+
+    get().beginUndoBatch('Delete edit');
+
+    if (node.toolName === 'apply_effect') {
+      get().removeEffect(node.targetClipId, node.appliedEffectId);
+
+      // Remove this node and all cascaded update_effect_param children
+      set((s) => ({
+        editHistory: s.editHistory.filter((n) => {
+          if (n.id === nodeId) return false;
+          if (
+            n.toolName === 'update_effect_param' &&
+            n.appliedEffectId === node.appliedEffectId &&
+            n.targetClipId === node.targetClipId
+          ) return false;
+          return true;
+        }),
+      }));
+    } else {
+      // update_effect_param — remove this specific parameter update
+      // Revert would require stored previous values; for now just remove the node
+      set((s) => ({
+        editHistory: s.editHistory.filter((n) => n.id !== nodeId),
+      }));
+    }
+
+    get().commitUndoBatch();
   },
 
   // ── Helpers ──
@@ -1665,7 +1917,11 @@ function isStoreShapeValid(store: ReturnType<typeof createStore>): boolean {
       typeof s.timeline === 'object' &&
       typeof s.timeline?.pixelsPerSecond === 'number' &&
       typeof s.setSelectedClip === 'function' &&
-      typeof s.toggleClipSelection === 'function'
+      typeof s.toggleClipSelection === 'function' &&
+      Array.isArray(s.editHistory) &&
+      (s.editHistory.length === 0 || 'snapshot' in s.editHistory[0]) &&
+      'activeNodeId' in s &&
+      (s.activeNodeId === null || typeof s.activeNodeId === 'string')
     );
   } catch {
     return false;

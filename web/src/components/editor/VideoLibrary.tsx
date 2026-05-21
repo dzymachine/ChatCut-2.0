@@ -55,8 +55,11 @@ export function VideoLibrary() {
                   className="w-full h-full object-cover"
                   muted
                   playsInline
-                  loop
-                  autoPlay
+                  preload="metadata"
+                  onLoadedMetadata={(e) => {
+                    const vid = e.currentTarget;
+                    vid.currentTime = Math.min(0.1, vid.duration / 4);
+                  }}
                 />
               ) : (
                 <img

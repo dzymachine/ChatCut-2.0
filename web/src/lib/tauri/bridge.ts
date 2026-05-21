@@ -88,6 +88,7 @@ export interface ExportClip {
   sourceEnd: number;
   timelineStart: number;
   effects: ExportEffect[];
+  recipe?: import('../../../src-shared/recipe').Recipe;
 }
 
 /** Export settings */
