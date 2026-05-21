@@ -1,0 +1,267 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.1.0",
+  "tools": [
+    {
+      "name": "get_timeline_state",
+      "type": "introspection",
+      "description": "Get the full timeline state including all tracks, clips, and composition settings.",
+      "parameters": {}
+    },
+    {
+      "name": "get_media_library",
+      "type": "introspection",
+      "description": "Get all imported media files available for use on the timeline.",
+      "parameters": {}
+    },
+    {
+      "name": "get_clip_at_time",
+      "type": "introspection",
+      "description": "Get the clip at a specific playhead time position.",
+      "parameters": {
+        "time": {
+          "type": "number",
+          "description": "Time position in seconds to query.",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "get_selected_clip",
+      "type": "introspection",
+      "description": "Get the currently selected/active clip and its properties.",
+      "parameters": {}
+    },
+    {
+      "name": "add_clip",
+      "type": "mutation",
+      "description": "Add a media file to the timeline at a specific position.",
+      "parameters": {
+        "media_file_id": {
+          "type": "string",
+          "description": "ID of the media file from the library to add.",
+          "required": true
+        },
+        "track_id": {
+          "type": "string",
+          "description": "Target track ID. If omitted, adds to the first video track (V1)."
+        },
+        "timeline_start": {
+          "type": "number",
+          "description": "Start time on the timeline in seconds. Defaults to 0."
+        }
+      }
+    },
+    {
+      "name": "remove_clip",
+      "type": "mutation",
+      "description": "Remove a clip from the timeline by its ID.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to remove. If omitted, removes the currently selected clip."
+        }
+      }
+    },
+    {
+      "name": "trim_clip",
+      "type": "mutation",
+      "description": "Trim a clip's source start or end point. Adjusts which portion of the source media is shown.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to trim. If omitted, uses the currently selected clip."
+        },
+        "source_start": {
+          "type": "number",
+          "description": "New source start time in seconds. Trims from the beginning."
+        },
+        "source_end": {
+          "type": "number",
+          "description": "New source end time in seconds. Trims from the end."
+        }
+      }
+    },
+    {
+      "name": "move_clip",
+      "type": "mutation",
+      "description": "Move a clip to a new position on the timeline, optionally to a different track.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to move. If omitted, uses the currently selected clip."
+        },
+        "timeline_start": {
+          "type": "number",
+          "description": "New start time on the timeline in seconds.",
+          "required": true
+        },
+        "track_id": {
+          "type": "string",
+          "description": "Target track ID. If omitted, stays on the current track."
+        }
+      }
+    },
+    {
+      "name": "apply_effect",
+      "type": "mutation",
+      "description": "Apply a visual or audio effect to a clip.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to apply the effect to. If omitted, uses the currently selected clip."
+        },
+        "effect_id": {
+          "type": "string",
+          "description": "Effect identifier from the registry.",
+          "required": true,
+          "enum": [
+            "scale",
+            "position",
+            "rotation",
+            "opacity",
+            "crop",
+            "brightness",
+            "contrast",
+            "saturation",
+            "exposure",
+            "color_temperature",
+            "hue_rotate",
+            "grayscale",
+            "gaussian_blur",
+            "sharpen",
+            "sepia",
+            "vignette",
+            "cross_dissolve",
+            "fade_out",
+            "fade_in",
+            "playback_speed"
+          ]
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Effect-specific parameters as key-value pairs. Keys correspond to the effect's parameter IDs."
+        }
+      }
+    },
+    {
+      "name": "update_effect_param",
+      "type": "mutation",
+      "description": "Update a parameter on an already-applied effect.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip. If omitted, uses the currently selected clip."
+        },
+        "applied_effect_id": {
+          "type": "string",
+          "description": "ID of the applied effect instance on the clip.",
+          "required": true
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Updated parameter values as key-value pairs.",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "remove_effect",
+      "type": "mutation",
+      "description": "Remove an applied effect from a clip. Use this to undo an apply_effect call — pass the applied_effect_id returned by apply_effect.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip the effect is on. If omitted, uses the currently selected clip."
+        },
+        "applied_effect_id": {
+          "type": "string",
+          "description": "ID of the applied effect instance on the clip (returned by apply_effect).",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "toggle_effect",
+      "type": "mutation",
+      "description": "Enable or disable an applied effect without removing it. Useful for previewing 'before/after' or temporarily suppressing an effect.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip the effect is on. If omitted, uses the currently selected clip."
+        },
+        "applied_effect_id": {
+          "type": "string",
+          "description": "ID of the applied effect instance on the clip.",
+          "required": true
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "True to enable the effect, false to disable it.",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "list_filter_categories",
+      "type": "introspection",
+      "description": "List all FFmpeg filter categories with their filter counts. Use this to discover what kinds of filters are available before browsing specific categories.",
+      "parameters": {}
+    },
+    {
+      "name": "list_filters",
+      "type": "introspection",
+      "description": "List available FFmpeg filters, optionally filtered by category or keyword search. Returns filter names, types, and descriptions.",
+      "parameters": {
+        "category": {
+          "type": "string",
+          "description": "Category ID to filter by (e.g. 'color', 'blur', 'transform'). Get valid IDs from list_filter_categories."
+        },
+        "query": {
+          "type": "string",
+          "description": "Keyword to search filter names and descriptions."
+        }
+      }
+    },
+    {
+      "name": "describe_filter",
+      "type": "introspection",
+      "description": "Get detailed info about a specific FFmpeg filter including all its parameters, types, defaults, and value ranges.",
+      "parameters": {
+        "filter_name": {
+          "type": "string",
+          "description": "Name of the FFmpeg filter to describe (e.g. 'eq', 'hue', 'gblur').",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "compose_recipe",
+      "type": "mutation",
+      "description": "Compose an FFmpeg filter recipe and attach it to a clip. The recipe is a filter graph with nodes (filters + params) connected in sequence. Validates structure before attaching.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "ID of the clip to attach the recipe to. If omitted, uses the currently selected clip."
+        },
+        "recipe": {
+          "type": "object",
+          "description": "Recipe object with 'nodes' array (each node has 'id', 'filter', 'params' or 'raw') and 'connections' array (each has 'from' and 'to' node IDs, using 'input'/'output' for endpoints).",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "validate_recipe",
+      "type": "introspection",
+      "description": "Validate a recipe by compiling it to an FFmpeg filter string and running a dry-run. Returns the compiled filter string on success, or an error describing what's wrong.",
+      "parameters": {
+        "recipe": {
+          "type": "object",
+          "description": "Recipe object to validate (same format as compose_recipe).",
+          "required": true
+        }
+      }
+    }
+  ]
+}
