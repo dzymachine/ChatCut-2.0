@@ -3,7 +3,7 @@ name = "chatcut"
 version = "0.1.0"
 description = "ChatCut - AI-Powered Video Editor"
 authors = ["ChatCut Team"]
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "chatcut_lib"
@@ -13,12 +13,22 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rmcp = { version = "1", features = ["server", "macros", "transport-streamable-http-server", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+schemars = "1"
+axum = "0.7"
+uuid = { version = "1", features = ["v4"] }
+etcetera = "0.10"
+anyhow = "1"
 
 [profile.release]
 panic = "abort"

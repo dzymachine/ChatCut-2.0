@@ -1,0 +1,80 @@
+{
+  "categories": [
+    {
+      "id": "color",
+      "name": "Color & Grading",
+      "filters": [
+        "eq", "hue", "curves", "colorbalance", "colorchannelmixer",
+        "colorlevels", "colortemperature", "lut3d", "lut", "pseudocolor",
+        "selectivecolor", "vibrance", "exposure"
+      ]
+    },
+    {
+      "id": "blur",
+      "name": "Blur & Sharpen",
+      "filters": [
+        "boxblur", "gblur", "smartblur", "avgblur", "unsharp",
+        "bilateral", "sab", "yaepblur"
+      ]
+    },
+    {
+      "id": "transform",
+      "name": "Transform & Geometry",
+      "filters": [
+        "scale", "crop", "pad", "rotate", "flip", "hflip", "vflip",
+        "transpose", "perspective", "lenscorrection", "v360",
+        "zoompan", "scroll"
+      ]
+    },
+    {
+      "id": "overlay",
+      "name": "Overlay & Composition",
+      "filters": [
+        "overlay", "blend", "alphamerge", "alphaextract",
+        "chromakey", "colorkey", "despill", "premultiply"
+      ]
+    },
+    {
+      "id": "temporal",
+      "name": "Temporal & Speed",
+      "filters": [
+        "setpts", "fps", "minterpolate", "tmix", "tblend",
+        "framerate", "framestep", "loop", "reverse", "areverse"
+      ]
+    },
+    {
+      "id": "noise",
+      "name": "Noise & Grain",
+      "filters": [
+        "noise", "hqdn3d", "nlmeans", "vaguedenoiser", "atadenoise",
+        "bm3d", "dctdnoiz", "owdenoise", "removegrain"
+      ]
+    },
+    {
+      "id": "transition",
+      "name": "Transitions",
+      "filters": [
+        "xfade", "fade", "afade"
+      ]
+    },
+    {
+      "id": "text",
+      "name": "Text & Drawing",
+      "filters": [
+        "drawtext", "drawbox", "drawgrid", "drawgraph",
+        "subtitles", "ass"
+      ]
+    },
+    {
+      "id": "audio",
+      "name": "Audio",
+      "filters": [
+        "volume", "atempo", "aecho", "acompressor", "equalizer",
+        "loudnorm", "dynaudnorm", "highpass", "lowpass", "bandpass",
+        "bass", "treble", "chorus", "flanger", "phaser",
+        "silenceremove", "silencedetect", "afade", "acrossfade",
+        "amerge", "amix", "aresample"
+      ]
+    }
+  ]
+}

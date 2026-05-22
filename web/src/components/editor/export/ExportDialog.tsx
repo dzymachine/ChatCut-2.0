@@ -143,6 +143,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             parameters: { ...e.parameters },
             enabled: e.enabled,
           })),
+          ...(clip.recipe && { recipe: clip.recipe }),
         });
       }
     }

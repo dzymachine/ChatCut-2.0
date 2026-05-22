@@ -112,6 +112,44 @@ pub fn get_app_data_dir(app_handle: tauri::AppHandle) -> Result<String, String> 
     Ok(path.to_string_lossy().to_string())
 }
 
+// ─── FFmpeg Filter Catalog Commands ──────────────────────────────────
+
+#[tauri::command]
+pub fn list_filter_categories() -> Result<serde_json::Value, String> {
+    let cats = crate::ffmpeg::catalog::list_categories().map_err(|e| e.to_string())?;
+    serde_json::to_value(cats).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_filters(category: Option<String>, query: Option<String>) -> Result<serde_json::Value, String> {
+    let filters = crate::ffmpeg::catalog::list_filters(
+        category.as_deref(),
+        query.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    serde_json::to_value(filters).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn describe_filter(filter_name: String) -> Result<serde_json::Value, String> {
+    let detail = crate::ffmpeg::catalog::describe_filter(&filter_name).map_err(|e| e.to_string())?;
+    serde_json::to_value(detail).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn validate_recipe(recipe: crate::recipe::Recipe) -> Result<serde_json::Value, String> {
+    match crate::recipe::validator::validate_recipe_dryrun(&recipe) {
+        Ok(filter_string) => Ok(serde_json::json!({
+            "valid": true,
+            "filterString": filter_string,
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "valid": false,
+            "error": e.to_string(),
+        })),
+    }
+}
+
 /// Check if FFmpeg is available on the system
 #[tauri::command]
 pub fn check_ffmpeg() -> Result<String, String> {
