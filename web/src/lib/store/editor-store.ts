@@ -216,13 +216,12 @@ const createDefaultProject = (): Project => ({
     fps: 30,
     duration: 0,
   },
+  // Minimal defaults: one video track and one audio track. Users add more
+  // via the "+ Add track" button in the timeline header. Reduces clutter for
+  // common single-clip workflows.
   tracks: [
     { id: uuid(), type: 'video', label: 'V1', ...defaultTrackProps },
-    { id: uuid(), type: 'video', label: 'V2', ...defaultTrackProps },
-    { id: uuid(), type: 'video', label: 'V3', ...defaultTrackProps },
     { id: uuid(), type: 'audio', label: 'A1', ...defaultTrackProps },
-    { id: uuid(), type: 'audio', label: 'A2', ...defaultTrackProps },
-    { id: uuid(), type: 'audio', label: 'A3', ...defaultTrackProps },
   ],
   createdAt: Date.now(),
   updatedAt: Date.now(),
@@ -300,6 +299,7 @@ function createStore() {
       mediaFile.duration = metadata.duration;
       if (metadata.width) mediaFile.width = metadata.width;
       if (metadata.height) mediaFile.height = metadata.height;
+      if (metadata.fps) mediaFile.fps = metadata.fps;
     }
 
     set((state) => {
@@ -361,6 +361,7 @@ function createStore() {
       mediaFile.duration = metadata.duration;
       if (metadata.width) mediaFile.width = metadata.width;
       if (metadata.height) mediaFile.height = metadata.height;
+      if (metadata.fps) mediaFile.fps = metadata.fps;
     }
 
     set((state) => {
@@ -438,6 +439,9 @@ function createStore() {
     }
 
     set((state) => {
+      // First real clip in the project? (Checked against pre-update tracks.)
+      const isFirstClip = state.project.tracks.every((t) => t.clips.length === 0);
+
       const newTracks = state.project.tracks.map((track) => {
         if (track.id === targetTrack.id) {
           return { ...track, clips: [...track.clips, clip] };
@@ -451,24 +455,35 @@ function createStore() {
       // Recalculate composition duration
       const duration = calculateDuration(newTracks);
 
+      // On the FIRST clip, adopt the source's dimensions + frame rate so the
+      // composition matches the media. This covers every add path (timeline
+      // drop, chat, AI) — without it, chat/AI-driven adds keep the default
+      // 30fps even from a 60fps source (export would then downsample).
+      // Subsequent clips conform to the now-established composition.
+      const compositionFromSource = isFirstClip
+        ? {
+            ...(mediaFile.width && mediaFile.height
+              ? { width: mediaFile.width, height: mediaFile.height }
+              : {}),
+            ...(mediaFile.fps ? { fps: mediaFile.fps } : {}),
+          }
+        : {};
+
       return {
         project: {
           ...state.project,
           tracks: newTracks,
-          composition: { ...state.project.composition, duration },
+          composition: { ...state.project.composition, duration, ...compositionFromSource },
           updatedAt: Date.now(),
         },
         ui: { ...state.ui, selectedClipIds: [clip.id] },
       };
     });
 
-    // push undo entry for clip addition
-    const afterTracks = structuredClone(get().project.tracks);
-    const afterPlayback = structuredClone(get().playback);
     get().pushUndo({
       description: 'Add clip',
       previousState: { tracks: prevTracks, playback: prevPlayback },
-      nextState: { tracks: afterTracks, playback: afterPlayback },
+      nextState: { tracks: get().project.tracks, playback: get().playback },
     });
 
     return clip;
@@ -529,6 +544,7 @@ function createStore() {
             URL.revokeObjectURL(mediaFile.previewUrl);
           }
           newMediaFiles.delete(sourceId);
+          try { getVideoEngine().releasePoolSource(sourceId); } catch {}
         }
       }
 
@@ -1295,13 +1311,10 @@ function createStore() {
       };
     });
 
-    // push undo entry
-    const afterTracks = structuredClone(get().project.tracks);
-    const afterPlayback = structuredClone(get().playback);
     get().pushUndo({
       description: 'Add track',
       previousState: { tracks: prevTracks, playback: prevPlayback },
-      nextState: { tracks: afterTracks, playback: afterPlayback },
+      nextState: { tracks: get().project.tracks, playback: get().playback },
     });
 
     return track;
@@ -1622,7 +1635,7 @@ function createStore() {
         description,
         snapshotTracks: structuredClone(state.project.tracks),
         snapshotPlayback: structuredClone(state.playback),
-        snapshotEditHistory: structuredClone(state.editHistory),
+        snapshotEditHistory: state.editHistory,
       },
     });
   },
@@ -1636,9 +1649,9 @@ function createStore() {
     const afterPlayback = state.playback;
     const afterEditHistory = state.editHistory;
 
-    const tracksChanged = JSON.stringify(batch.snapshotTracks) !== JSON.stringify(afterTracks);
-    const playbackChanged = JSON.stringify(batch.snapshotPlayback) !== JSON.stringify(afterPlayback);
-    const editHistoryChanged = JSON.stringify(batch.snapshotEditHistory) !== JSON.stringify(afterEditHistory);
+    const tracksChanged = batch.snapshotTracks !== afterTracks && JSON.stringify(batch.snapshotTracks) !== JSON.stringify(afterTracks);
+    const playbackChanged = batch.snapshotPlayback !== afterPlayback && JSON.stringify(batch.snapshotPlayback) !== JSON.stringify(afterPlayback);
+    const editHistoryChanged = batch.snapshotEditHistory !== afterEditHistory;
 
     if (tracksChanged || playbackChanged || editHistoryChanged) {
       state.pushUndo({
@@ -2055,8 +2068,22 @@ async function probeMediaDuration(
   url: string,
   type: 'video' | 'audio',
   nativePath?: string | null,
-): Promise<{ duration: number; width?: number; height?: number }> {
+): Promise<{ duration: number; width?: number; height?: number; fps?: number }> {
   const TIMEOUT_MS = 8000;
+
+  // The browser <video>/<audio> element exposes duration + dimensions but
+  // NOT frame rate. When a native path is available (Tauri), fetch fps from
+  // ffprobe so composition.fps can match the source. Best-effort.
+  const fetchFps = async (): Promise<number | undefined> => {
+    if (!nativePath) return undefined;
+    try {
+      const { probeMedia } = await import('@/lib/tauri/bridge');
+      const result = await probeMedia(nativePath);
+      return result.fps && result.fps > 0 ? result.fps : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   try {
     const raw = await new Promise<{ duration: number; width?: number; height?: number }>((resolve, reject) => {
@@ -2100,7 +2127,9 @@ async function probeMediaDuration(
       console.warn('[probeMediaDuration] Invalid duration from browser:', raw.duration);
       throw new Error(`Invalid media duration: ${raw.duration}`);
     }
-    return raw;
+    // Browser probe gave duration/dims; augment with fps from ffprobe.
+    const fps = type === 'video' ? await fetchFps() : undefined;
+    return { ...raw, fps };
   } catch (browserError) {
     if (nativePath) {
       try {
@@ -2111,6 +2140,7 @@ async function probeMediaDuration(
             duration: result.duration,
             width: result.width ?? undefined,
             height: result.height ?? undefined,
+            fps: result.fps && result.fps > 0 ? result.fps : undefined,
           };
         }
         console.warn('[probeMediaDuration] FFprobe returned invalid duration:', result.duration);

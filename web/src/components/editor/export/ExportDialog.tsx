@@ -2,6 +2,24 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
+import { cva } from "class-variance-authority";
+
+const exportInput = cva(
+  "w-full px-3 py-1.5 rounded-md bg-neutral-800 border border-neutral-700 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+);
+
+const formatToggle = cva(
+  "flex-1 py-1.5 px-3 rounded-md text-xs font-medium transition-colors border",
+  {
+    variants: {
+      active: {
+        true: "bg-indigo-500/20 text-indigo-300 border-indigo-500/40",
+        false: "bg-neutral-800 text-neutral-400 border-neutral-700 hover:border-neutral-600",
+      },
+    },
+    defaultVariants: { active: false },
+  }
+);
 import {
   isTauri,
   saveFileDialog,
@@ -13,11 +31,9 @@ import {
   type ExportProgress,
 } from "@/lib/tauri/bridge";
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
 type ExportFormat = "mp4" | "webm" | "mov";
 type VideoCodec = "h264" | "h265" | "vp9" | "prores";
-type QualityPreset = "low" | "medium" | "high" | "lossless";
+type QualityPreset = "low" | "medium" | "high" | "veryhigh";
 type AudioCodec = "aac" | "opus" | "pcm";
 
 interface FormatConfig {
@@ -49,11 +65,22 @@ const FORMAT_OPTIONS: Record<ExportFormat, FormatConfig> = {
 };
 
 const QUALITY_OPTIONS: Record<QualityPreset, string> = {
-  low: "Draft (fast, larger file)",
-  medium: "Standard",
-  high: "High Quality",
-  lossless: "Lossless (very large file)",
+  low: "Low (smaller file)",
+  medium: "Medium",
+  high: "High",
+  veryhigh: "Very High (largest file)",
 };
+
+// Ordered for the slider (left → right = low → very high).
+const QUALITY_ORDER: QualityPreset[] = ["low", "medium", "high", "veryhigh"];
+
+// Frame-rate choices. "0" is a sentinel meaning "match source/composition".
+const FPS_OPTIONS: { label: string; value: number }[] = [
+  { label: "Source", value: 0 },
+  { label: "24", value: 24 },
+  { label: "30", value: 30 },
+  { label: "60", value: 60 },
+];
 
 const RESOLUTION_PRESETS = [
   { label: "1080p (1920x1080)", width: 1920, height: 1080 },
@@ -62,8 +89,6 @@ const RESOLUTION_PRESETS = [
   { label: "480p (854x480)", width: 854, height: 480 },
   { label: "Custom", width: 0, height: 0 },
 ];
-
-// ─── Component ──────────────────────────────────────────────────────────────
 
 interface ExportDialogProps {
   isOpen: boolean;
@@ -80,6 +105,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const [resolutionPreset, setResolutionPreset] = useState(0); // index into RESOLUTION_PRESETS
   const [customWidth, setCustomWidth] = useState(1920);
   const [customHeight, setCustomHeight] = useState(1080);
+  const [fpsChoice, setFpsChoice] = useState<number>(0); // 0 = match source/composition
   const [outputPath, setOutputPath] = useState("");
 
   // Export state
@@ -105,6 +131,9 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const resolution = resolutionPreset < RESOLUTION_PRESETS.length - 1
     ? RESOLUTION_PRESETS[resolutionPreset]
     : { label: "Custom", width: customWidth, height: customHeight };
+
+  // Effective export fps: explicit choice, else the composition (source) fps.
+  const effectiveFps = fpsChoice > 0 ? fpsChoice : project.composition.fps;
 
   // Choose output path
   const handleChoosePath = useCallback(async () => {
@@ -155,16 +184,40 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
   // Start export
   const handleExport = useCallback(async () => {
+    console.log('[ExportDialog] handleExport invoked', {
+      outputPath,
+      format,
+      codec,
+      resolution,
+      fps: effectiveFps,
+      quality,
+    });
+
     if (!outputPath) {
+      console.warn('[ExportDialog] BAIL: no output path chosen');
       setError("Please choose an output file location.");
       return;
     }
 
     const clips = buildExportClips();
+    console.log('[ExportDialog] buildExportClips returned', {
+      count: clips.length,
+      clips: clips.map((c) => ({
+        sourcePath: c.sourcePath,
+        sourceStart: c.sourceStart,
+        sourceEnd: c.sourceEnd,
+        hasRecipe: !!c.recipe,
+        recipeNodes: c.recipe?.nodes?.length ?? 0,
+        effectCount: c.effects?.length ?? 0,
+      })),
+    });
     if (clips.length === 0) {
+      console.warn('[ExportDialog] BAIL: no clips to export');
       setError("No video clips to export. Add media to the timeline first.");
       return;
     }
+
+    console.log('[ExportDialog] invoking exportVideo Tauri command…');
 
     setError(null);
     setIsExporting(true);
@@ -185,13 +238,15 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         codec,
         width: resolution.width,
         height: resolution.height,
-        fps: project.composition.fps,
+        fps: effectiveFps,
         quality,
         audioCodec,
         audioBitrate: audioBitrate,
       };
 
-      await exportVideo(clips, settings);
+      console.log('[ExportDialog] calling exportVideo with settings', settings);
+      const result = await exportVideo(clips, settings);
+      console.log('[ExportDialog] exportVideo resolved', result);
 
       // Start polling for progress
       progressIntervalRef.current = setInterval(async () => {
@@ -214,10 +269,23 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         }
       }, 500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Export failed");
+      console.error('[ExportDialog] exportVideo THREW', {
+        err,
+        type: typeof err,
+        message: err instanceof Error ? err.message : String(err),
+        stringified: (() => { try { return JSON.stringify(err); } catch { return '<unstringifiable>'; } })(),
+      });
+      const msg = err instanceof Error
+        ? err.message
+        : typeof err === 'string'
+          ? err
+          : (err && typeof err === 'object' && 'toString' in err)
+            ? String(err)
+            : 'Export failed (no error message)';
+      setError(msg);
       setIsExporting(false);
     }
-  }, [outputPath, buildExportClips, format, codec, resolution, project.composition.fps, quality, audioCodec, audioBitrate]);
+  }, [outputPath, buildExportClips, format, codec, resolution, effectiveFps, quality, audioCodec, audioBitrate]);
 
   // Cancel export
   const handleCancel = useCallback(async () => {
@@ -281,11 +349,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 <button
                   key={f}
                   onClick={() => setFormat(f)}
-                  className={`flex-1 py-1.5 px-3 rounded-md text-xs font-medium transition-colors ${
-                    format === f
-                      ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40"
-                      : "bg-neutral-800 text-neutral-400 border border-neutral-700 hover:border-neutral-600"
-                  }`}
+                  className={formatToggle({ active: format === f })}
                 >
                   {FORMAT_OPTIONS[f].label}
                 </button>
@@ -299,7 +363,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             <select
               value={codec}
               onChange={(e) => setCodec(e.target.value as VideoCodec)}
-              className="w-full px-3 py-1.5 rounded-md bg-neutral-800 border border-neutral-700 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className={exportInput()}
             >
               {FORMAT_OPTIONS[format].codecs.map((c) => (
                 <option key={c} value={c}>
@@ -309,16 +373,41 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             </select>
           </fieldset>
 
-          {/* Quality */}
+          {/* Quality — low → very high slider */}
           <fieldset disabled={isExporting}>
-            <label className="block text-xs font-medium text-neutral-400 mb-1.5">Quality</label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium text-neutral-400">Quality</label>
+              <span className="text-xs text-neutral-300">{QUALITY_OPTIONS[quality]}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={QUALITY_ORDER.length - 1}
+              step={1}
+              value={QUALITY_ORDER.indexOf(quality)}
+              onChange={(e) => setQuality(QUALITY_ORDER[Number(e.target.value)])}
+              className="w-full accent-indigo-500"
+            />
+            <div className="flex justify-between text-[10px] text-neutral-500 mt-0.5">
+              <span>Low</span><span>Med</span><span>High</span><span>Very High</span>
+            </div>
+          </fieldset>
+
+          {/* Frame rate */}
+          <fieldset disabled={isExporting}>
+            <label className="block text-xs font-medium text-neutral-400 mb-1.5">
+              Frame Rate
+              {fpsChoice === 0 && project.composition.fps > 0 && (
+                <span className="text-neutral-500"> (source: {Math.round(project.composition.fps)} fps)</span>
+              )}
+            </label>
             <select
-              value={quality}
-              onChange={(e) => setQuality(e.target.value as QualityPreset)}
-              className="w-full px-3 py-1.5 rounded-md bg-neutral-800 border border-neutral-700 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value={fpsChoice}
+              onChange={(e) => setFpsChoice(Number(e.target.value))}
+              className={exportInput()}
             >
-              {(Object.keys(QUALITY_OPTIONS) as QualityPreset[]).map((q) => (
-                <option key={q} value={q}>{QUALITY_OPTIONS[q]}</option>
+              {FPS_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
           </fieldset>
@@ -329,7 +418,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             <select
               value={resolutionPreset}
               onChange={(e) => setResolutionPreset(Number(e.target.value))}
-              className="w-full px-3 py-1.5 rounded-md bg-neutral-800 border border-neutral-700 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              className={exportInput()}
             >
               {RESOLUTION_PRESETS.map((r, i) => (
                 <option key={i} value={i}>{r.label}</option>
@@ -342,7 +431,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                   value={customWidth}
                   onChange={(e) => setCustomWidth(Number(e.target.value))}
                   placeholder="Width"
-                  className="flex-1 px-3 py-1.5 rounded-md bg-neutral-800 border border-neutral-700 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className={exportInput() + " flex-1"}
                 />
                 <span className="text-neutral-500 self-center text-sm">x</span>
                 <input
@@ -350,7 +439,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                   value={customHeight}
                   onChange={(e) => setCustomHeight(Number(e.target.value))}
                   placeholder="Height"
-                  className="flex-1 px-3 py-1.5 rounded-md bg-neutral-800 border border-neutral-700 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className={exportInput() + " flex-1"}
                 />
               </div>
             )}

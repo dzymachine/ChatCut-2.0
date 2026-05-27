@@ -15,10 +15,6 @@ interface TimeRulerProps {
   scrollLeft: number;
 }
 
-/**
- * The time ruler at the top of the timeline.
- * Draws tick marks and time labels. Click/drag to scrub the playhead.
- */
 export function TimeRuler({
   pixelsPerSecond,
   duration,
@@ -28,7 +24,6 @@ export function TimeRuler({
 }: TimeRulerProps) {
   const isScrubbing = useRef(false);
 
-  // ── Calculate tick interval based on zoom ──
   const { majorInterval, minorInterval } = useMemo(() => {
     // Choose intervals so major ticks are ~80-150px apart
     const targetMajorPx = 100;
@@ -46,7 +41,6 @@ export function TimeRuler({
     return { majorInterval: major, minorInterval: minor };
   }, [pixelsPerSecond]);
 
-  // ── Generate visible ticks ──
   const ticks = useMemo(() => {
     const result: Array<{
       time: number;
@@ -82,27 +76,42 @@ export function TimeRuler({
       e.preventDefault();
       const engine = getVideoEngine();
       const rulerRect = e.currentTarget.getBoundingClientRect();
-      
-      // Calculate time from mouse position
-      // rulerRect.left is the ruler's position on screen
-      // clientX - rulerRect.left = position within the ruler (in pixels)
-      // For the ruler element, rulerRect.left already reflects horizontal scroll
-      // in the scroll container. Adding scrollLeft again double-counts it.
+
+      // Calculate time from mouse position. rulerRect.left already reflects
+      // horizontal scroll inside the container, so don't add scrollLeft again.
       const xInContent = e.clientX - rulerRect.left;
       const time = Math.max(0, xInContent / pixelsPerSecond);
-      
+
       engine.seek(time);
       isScrubbing.current = true;
+
+      // rAF-throttle: mousemove fires at 60-120 Hz; each seek triggers a
+      // videoElement.currentTime decode which is expensive. Coalesce so we
+      // call seek() at most once per animation frame using the latest target.
+      let pendingTime: number | null = null;
+      let rafId: number | null = null;
+      const flush = () => {
+        rafId = null;
+        if (pendingTime !== null && isScrubbing.current) {
+          engine.seek(pendingTime);
+          pendingTime = null;
+        }
+      };
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         if (!isScrubbing.current) return;
         const xInContent = moveEvent.clientX - rulerRect.left;
-        const t = Math.max(0, xInContent / pixelsPerSecond);
-        engine.seek(t);
+        pendingTime = Math.max(0, xInContent / pixelsPerSecond);
+        if (rafId === null) {
+          rafId = requestAnimationFrame(flush);
+        }
       };
 
       const handleMouseUp = () => {
         isScrubbing.current = false;
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        // Final seek so the playhead lands exactly where the user released.
+        if (pendingTime !== null) engine.seek(pendingTime);
         window.removeEventListener("mousemove", handleMouseMove);
         window.removeEventListener("mouseup", handleMouseUp);
       };
@@ -125,14 +134,12 @@ export function TimeRuler({
           className="absolute bottom-0"
           style={{ left: tick.x }}
         >
-          {/* Tick line */}
           <div
             className={`absolute bottom-0 w-px ${
               tick.isMajor ? "bg-neutral-500" : "bg-neutral-700"
             }`}
             style={{ height: tick.isMajor ? 12 : 6 }}
           />
-          {/* Label */}
           {tick.isMajor && tick.label && (
             <span
               className="absolute text-[10px] text-neutral-500 whitespace-nowrap select-none"

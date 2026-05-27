@@ -124,3 +124,12 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer components {
+  .panel-section {
+    @apply px-3 py-2 border-b border-neutral-800;
+  }
+  .muted-label {
+    @apply text-xs text-neutral-500;
+  }
+}

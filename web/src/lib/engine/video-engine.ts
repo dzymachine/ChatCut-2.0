@@ -101,6 +101,16 @@ class VideoElementPool {
     }
   }
 
+  releaseSource(sourceFileId: string): void {
+    const el = this.elements.get(sourceFileId);
+    if (!el) return;
+    el.pause();
+    el.src = '';
+    el.parentNode?.removeChild(el);
+    this.elements.delete(sourceFileId);
+    this.loadedSources.delete(sourceFileId);
+  }
+
   destroyAll(): void {
     for (const el of this.elements.values()) {
       el.pause();
@@ -243,6 +253,10 @@ export class VideoEngine {
     if (this.canvas && this.ctx) {
       this.drawPlaceholder();
     }
+  }
+
+  releasePoolSource(sourceFileId: string): void {
+    this.videoPool.releaseSource(sourceFileId);
   }
 
   /**

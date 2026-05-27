@@ -1,10 +1,25 @@
 "use client";
 
-import { useCallback, useRef, useMemo, useState } from "react";
+import { useCallback, useRef, useMemo, useState, memo } from "react";
 import { useEditorStore, withUndo } from "@/lib/store/editor-store";
+import { useShallow } from "zustand/react/shallow";
+import { cva } from "class-variance-authority";
 import { executeAction } from "@/lib/commands/command-handler";
 import type { Clip, Track } from "@/types/editor";
 import { TRACK_HEIGHT } from "@/types/editor";
+
+const contextMenuItem = cva(
+  "w-full text-left px-3 py-1.5 hover:bg-neutral-700 flex items-center gap-2",
+  {
+    variants: {
+      variant: {
+        default: "text-neutral-200",
+        danger: "text-red-400",
+      },
+    },
+    defaultVariants: { variant: "default" },
+  }
+);
 
 interface TimelineClipProps {
   clip: Clip;
@@ -53,7 +68,7 @@ const CLIP_COLORS: Record<string, { bg: string; border: string; selectedBorder: 
   },
 };
 
-export function TimelineClip({
+export const TimelineClip = memo(function TimelineClip({
   clip,
   track,
   pixelsPerSecond,
@@ -74,7 +89,7 @@ export function TimelineClip({
   const unlinkClip = useEditorStore((s) => s.unlinkClip);
   const removeClip = useEditorStore((s) => s.removeClip);
   const mediaFiles = useEditorStore((s) => s.mediaFiles);
-  const selectedClipIds = useEditorStore((s) => s.ui.selectedClipIds);
+  const selectedClipIds = useEditorStore(useShallow((s) => s.ui.selectedClipIds));
 
   const clipRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<{
@@ -445,7 +460,7 @@ export function TimelineClip({
           <div className="relative bg-neutral-800 border border-neutral-700 rounded-md shadow-xl py-1 min-w-[160px] text-xs">
             <button
               onClick={handleSplitFromMenu}
-              className="w-full text-left px-3 py-1.5 hover:bg-neutral-700 text-neutral-200 flex items-center gap-2"
+              className={contextMenuItem()}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M12 2v20M2 12h4M18 12h4" />
@@ -455,7 +470,7 @@ export function TimelineClip({
             </button>
             <button
               onClick={handleDeleteFromMenu}
-              className="w-full text-left px-3 py-1.5 hover:bg-neutral-700 text-red-400 flex items-center gap-2"
+              className={contextMenuItem({ variant: "danger" })}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" />
@@ -469,7 +484,7 @@ export function TimelineClip({
                 {isLinked ? (
                   <button
                     onClick={handleUnlink}
-                    className="w-full text-left px-3 py-1.5 hover:bg-neutral-700 text-neutral-200 flex items-center gap-2"
+                    className={contextMenuItem()}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
@@ -482,7 +497,7 @@ export function TimelineClip({
                 ) : (
                   <button
                     onClick={handleLinkFromMenu}
-                    className="w-full text-left px-3 py-1.5 hover:bg-neutral-700 text-neutral-200 flex items-center gap-2"
+                    className={contextMenuItem()}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
@@ -499,4 +514,4 @@ export function TimelineClip({
       )}
     </>
   );
-}
+});

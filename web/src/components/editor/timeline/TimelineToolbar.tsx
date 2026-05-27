@@ -2,8 +2,23 @@
 
 import { useCallback } from "react";
 import { useEditorStore, withUndo } from "@/lib/store/editor-store";
+import { useShallow } from "zustand/react/shallow";
+import { cva } from "class-variance-authority";
 import { executeAction } from "@/lib/commands/command-handler";
 import type { TimelineTool } from "@/types/editor";
+
+const toolbarToggle = cva(
+  "p-1.5 rounded transition-colors",
+  {
+    variants: {
+      active: {
+        true: "bg-blue-500/20 text-blue-400",
+        false: "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800",
+      },
+    },
+    defaultVariants: { active: false },
+  }
+);
 import {
   Tooltip,
   TooltipContent,
@@ -26,7 +41,7 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
   const setLinkedSelectionEnabled = useEditorStore((s) => s.setLinkedSelectionEnabled);
   const pixelsPerSecond = useEditorStore((s) => s.timeline.pixelsPerSecond);
   const setTimelineZoom = useEditorStore((s) => s.setTimelineZoom);
-  const selectedClipIds = useEditorStore((s) => s.ui.selectedClipIds);
+  const selectedClipIds = useEditorStore(useShallow((s) => s.ui.selectedClipIds));
   const removeClip = useEditorStore((s) => s.removeClip);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const addTrack = useEditorStore((s) => s.addTrack);
@@ -89,11 +104,7 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
             <TooltipTrigger asChild>
               <button
                 onClick={() => setActiveTool(tool.id)}
-                className={`p-1.5 rounded transition-colors ${
-                  activeTool === tool.id
-                    ? "bg-blue-500/20 text-blue-400"
-                    : "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800"
-                }`}
+                className={toolbarToggle({ active: activeTool === tool.id })}
               >
                 {tool.icon}
               </button>
@@ -113,11 +124,7 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
         <TooltipTrigger asChild>
           <button
             onClick={() => setSnapEnabled(!snapEnabled)}
-            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
-              snapEnabled
-                ? "bg-blue-500/20 text-blue-400"
-                : "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800"
-            }`}
+            className={toolbarToggle({ active: snapEnabled }) + " flex items-center gap-1"}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M21 14l-3-3h-7a1 1 0 01-1-1V3" />
@@ -137,11 +144,7 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
         <TooltipTrigger asChild>
           <button
             onClick={() => setLinkedSelectionEnabled(!linkedSelectionEnabled)}
-            className={`p-1.5 rounded transition-colors flex items-center gap-1 ${
-              linkedSelectionEnabled
-                ? "bg-blue-500/20 text-blue-400"
-                : "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800"
-            }`}
+            className={toolbarToggle({ active: linkedSelectionEnabled }) + " flex items-center gap-1"}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />

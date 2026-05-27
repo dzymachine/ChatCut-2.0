@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore, isVideoFile, withUndo } from "@/lib/store/editor-store";
+import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/lib/commands/command-handler";
 import { isTauri } from "@/lib/tauri/bridge";  // desktop helper
 import { TRACK_HEIGHT, RULER_HEIGHT, TRACK_HEADER_WIDTH } from "@/types/editor";
@@ -16,17 +17,6 @@ import { showToast } from "@/components/ui/toast-notification";
 
 const TRACK_DIVIDER_HEIGHT = 4;
 
-/**
- * The Timeline panel — lives at the bottom of the editor.
- *
- * Features:
- *  - Resizable via top drag handle
- *  - Time ruler with click-to-scrub
- *  - Multi-track lanes with clips
- *  - Playhead overlay
- *  - Zoom controls (toolbar + scroll wheel)
- *  - Keyboard shortcuts (V, C, Delete, Cmd+B)
- */
 export function Timeline() {
   const tracks = useEditorStore((s) => s.project.tracks);
   const duration = useEditorStore((s) => s.project.composition.duration);
@@ -34,19 +24,55 @@ export function Timeline() {
   const panelHeight = useEditorStore((s) => s.timeline.panelHeight);
   const setTimelinePanelHeight = useEditorStore((s) => s.setTimelinePanelHeight);
   const setTimelineZoom = useEditorStore((s) => s.setTimelineZoom);
-  const selectedClipIds = useEditorStore((s) => s.ui.selectedClipIds);
+  const selectedClipIds = useEditorStore(useShallow((s) => s.ui.selectedClipIds));
   const removeClip = useEditorStore((s) => s.removeClip);
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
+  const addTrack = useEditorStore((s) => s.addTrack);
 
   const toggleLinkForSelection = useEditorStore((s) => s.toggleLinkForSelection);
+  const linkedSelectionEnabled = useEditorStore((s) => s.ui.linkedSelectionEnabled);
+  const snapEnabled = useEditorStore((s) => s.timeline.snapEnabled);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [visibleWidth, setVisibleWidth] = useState(800);
 
-  const videoTracks = useMemo(() => tracks.filter((t) => t.type === 'video'), [tracks]);
-  const audioTracks = useMemo(() => tracks.filter((t) => t.type === 'audio'), [tracks]);
+  const [stickyTrackIds, setStickyTrackIds] = useState<Set<string>>(new Set());
+
+  const allVideoTracks = useMemo(() => tracks.filter((t) => t.type === 'video'), [tracks]);
+  const allAudioTracks = useMemo(() => tracks.filter((t) => t.type === 'audio'), [tracks]);
+
+  const videoTracks = useMemo(() => {
+    const visible = allVideoTracks.filter(
+      (t) => t.clips.length > 0 || stickyTrackIds.has(t.id)
+    );
+    if (visible.length > 0) return visible;
+    const primary = allVideoTracks[0];
+    return primary ? [primary] : [];
+  }, [allVideoTracks, stickyTrackIds]);
+
+  const audioTracks = useMemo(() => {
+    const visible = allAudioTracks.filter(
+      (t) => t.clips.length > 0 || stickyTrackIds.has(t.id)
+    );
+    if (visible.length > 0) return visible;
+    const primary = allAudioTracks[0];
+    return primary ? [primary] : [];
+  }, [allAudioTracks, stickyTrackIds]);
+
+  const handleAddTrack = useCallback(
+    (type: 'video' | 'audio') => {
+      const newTrack = addTrack(type);
+      setStickyTrackIds((prev) => {
+        const next = new Set(prev);
+        next.add(newTrack.id);
+        return next;
+      });
+    },
+    [addTrack]
+  );
+
   const hasBothTypes = videoTracks.length > 0 && audioTracks.length > 0;
 
   const allTrackIds = useMemo(
@@ -54,51 +80,35 @@ export function Timeline() {
     [videoTracks, audioTracks]
   );
 
+  const snapPoints = useMemo(() => {
+    const points: number[] = [0, currentTime];
+    for (const t of tracks) {
+      for (const c of t.clips) {
+        points.push(c.timelineStart);
+        points.push(c.timelineStart + (c.sourceEnd - c.sourceStart));
+      }
+    }
+    return [...new Set(points)].sort((a, b) => a - b);
+  }, [tracks, currentTime]);
+
+  const selectedLinkIds = useMemo(() => {
+    if (!linkedSelectionEnabled || selectedClipIds.length === 0) return new Set<string>();
+    const linkIds = new Set<string>();
+    for (const t of tracks) {
+      for (const c of t.clips) {
+        if (selectedClipIds.includes(c.id) && c.linkId) {
+          linkIds.add(c.linkId);
+        }
+      }
+    }
+    return linkIds;
+  }, [selectedClipIds, linkedSelectionEnabled, tracks]);
+
   const dividerHeight = hasBothTypes ? TRACK_DIVIDER_HEIGHT : 0;
-  const tracksHeight = tracks.length * TRACK_HEIGHT + dividerHeight;
+  const tracksHeight = (videoTracks.length + audioTracks.length) * TRACK_HEIGHT + dividerHeight;
 
   const contentDuration = Math.max(duration + Math.max(duration * 0.2, 5), 10);
   const totalWidth = contentDuration * pixelsPerSecond;
-
-  // Calculate overlap regions between tracks
-  // const overlapRegions = useMemo(() => {
-  //   const regions: Array<{ start: number; end: number; tracks: string[] }> = [];
-    
-  //   // For each pair of video tracks, find overlapping time ranges
-  //   for (let i = 0; i < videoTracks.length; i++) {
-  //     for (let j = i + 1; j < videoTracks.length; j++) {
-  //       const track1 = videoTracks[i];
-  //       const track2 = videoTracks[j];
-        
-  //       // Find all time ranges where both tracks have clips
-  //       const ranges1 = track1.clips.map(clip => ({
-  //         start: clip.timelineStart,
-  //         end: clip.timelineStart + (clip.sourceEnd - clip.sourceStart)
-  //       }));
-  //       const ranges2 = track2.clips.map(clip => ({
-  //         start: clip.timelineStart,
-  //         end: clip.timelineStart + (clip.sourceEnd - clip.sourceStart)
-  //       }));
-        
-  //       // Find intersections
-  //       for (const r1 of ranges1) {
-  //         for (const r2 of ranges2) {
-  //           const overlapStart = Math.max(r1.start, r2.start);
-  //           const overlapEnd = Math.min(r1.end, r2.end);
-  //           if (overlapStart < overlapEnd) {
-  //             regions.push({
-  //               start: overlapStart,
-  //               end: overlapEnd,
-  //               tracks: [track1.id, track2.id]
-  //             });
-  //           }
-  //         }
-  //       }
-  //     }
-  //   }
-    
-  //   return regions;
-  // }, [videoTracks]);
 
   const resizeState = useRef<{ startY: number; startHeight: number } | null>(null);
 
@@ -323,19 +333,6 @@ export function Timeline() {
           }
           
           store.addClipFromMedia(mediaFile, targetTrackId, dropTime);
-
-          if (mediaFile.width && mediaFile.height) {
-            useEditorStore.setState((state) => ({
-              project: {
-                ...state.project,
-                composition: {
-                  ...state.project.composition,
-                  width: mediaFile.width!,
-                  height: mediaFile.height!,
-                },
-              },
-            }));
-          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Failed to load video";
           console.error("[Timeline] Tauri drop error:", msg);
@@ -419,19 +416,6 @@ export function Timeline() {
         return;
       }
 
-      if (mediaFile.width && mediaFile.height) {
-        useEditorStore.setState((state) => ({
-          project: {
-            ...state.project,
-            composition: {
-              ...state.project.composition,
-              width: mediaFile.width!,
-              height: mediaFile.height!,
-            },
-          },
-        }));
-      }
-
       try {
         const engine = getVideoEngine();
         await engine.loadSource(mediaFile.previewUrl);
@@ -478,6 +462,14 @@ export function Timeline() {
             {videoTracks.map((track) => (
               <TrackHeader key={track.id} track={track} />
             ))}
+            <button
+              type="button"
+              onClick={() => handleAddTrack('video')}
+              className="w-full text-[10px] text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800/60 px-2 py-1 transition-colors text-left"
+              title="Add a new video track"
+            >
+              + Add video track
+            </button>
             {hasBothTypes && (
               <div
                 className="bg-neutral-700/60 shrink-0"
@@ -487,6 +479,14 @@ export function Timeline() {
             {audioTracks.map((track) => (
               <TrackHeader key={track.id} track={track} />
             ))}
+            <button
+              type="button"
+              onClick={() => handleAddTrack('audio')}
+              className="w-full text-[10px] text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800/60 px-2 py-1 transition-colors text-left"
+              title="Add a new audio track"
+            >
+              + Add audio track
+            </button>
           </div>
         </div>
 
@@ -518,6 +518,8 @@ export function Timeline() {
                   totalWidth={totalWidth}
                   index={index}
                   allTrackIds={allTrackIds}
+                  snapPoints={snapPoints}
+                  selectedLinkIds={selectedLinkIds}
                 />
               ))}
               {hasBothTypes && (
@@ -534,22 +536,10 @@ export function Timeline() {
                   totalWidth={totalWidth}
                   index={videoTracks.length + index}
                   allTrackIds={allTrackIds}
+                  snapPoints={snapPoints}
+                  selectedLinkIds={selectedLinkIds}
                 />
               ))}
-
-              {/* Overlap indicators for layering visualization - DISABLED */}
-              {/* {overlapRegions.map((region, idx) => (
-                <div
-                  key={`overlap-${idx}`}
-                  className="absolute top-0 bottom-0 bg-yellow-500/10 border-l border-r border-yellow-400/30 pointer-events-none z-10"
-                  style={{
-                    left: region.start * pixelsPerSecond,
-                    width: (region.end - region.start) * pixelsPerSecond,
-                    height: videoTracks.length * TRACK_HEIGHT,
-                  }}
-                  title={`Layered content: ${region.tracks.length} tracks overlapping`}
-                />
-              ))} */}
 
               {isTimelineDragOver && (
                 <div className="absolute inset-0 bg-blue-500/10 border-2 border-dashed border-blue-400/50 flex items-center justify-center z-30 rounded pointer-events-none">
