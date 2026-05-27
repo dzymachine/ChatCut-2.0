@@ -5,8 +5,6 @@ use std::sync::OnceLock;
 use super::probe::{self, FilterDetail, FilterInfo};
 use crate::error::ChatCutError;
 
-// ─── Category Map (loaded from filter-categories.json at compile time) ────────
-
 #[derive(Debug, Deserialize)]
 struct CategoriesFile {
     categories: Vec<CategoryDef>,
@@ -39,8 +37,6 @@ fn category_map() -> &'static HashMap<String, (String, String)> {
     CATEGORY_MAP.get_or_init(load_category_map)
 }
 
-// ─── Catalog (lazily populated from ffmpeg probe) ─────────────────────────────
-
 static FILTER_CACHE: OnceLock<Vec<FilterInfo>> = OnceLock::new();
 
 fn cached_filters() -> Result<&'static Vec<FilterInfo>, ChatCutError> {
@@ -50,8 +46,6 @@ fn cached_filters() -> Result<&'static Vec<FilterInfo>, ChatCutError> {
     let filters = probe::probe_filters()?;
     Ok(FILTER_CACHE.get_or_init(|| filters))
 }
-
-// ─── Public API ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -4,11 +4,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-// ─── Recipe AST Types ─────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Recipe {
+    /// LLM-emitted recipes often omit this — default keeps deserialization
+    /// permissive. Used only for tracking; not consumed during compile.
+    #[serde(default)]
     pub id: String,
     pub nodes: Vec<RecipeNode>,
     pub connections: Vec<RecipeConnection>,
@@ -59,8 +60,6 @@ pub struct RecipeConnection {
     pub from: String,
     pub to: String,
 }
-
-// ─── Compiler ─────────────────────────────────────────────────────────────────
 
 /// Compile a Recipe AST into an FFmpeg filter chain string.
 ///

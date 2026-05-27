@@ -29,6 +29,7 @@ axum = "0.7"
 uuid = { version = "1", features = ["v4"] }
 etcetera = "0.10"
 anyhow = "1"
+tempfile = "3"
 
 [profile.release]
 panic = "abort"

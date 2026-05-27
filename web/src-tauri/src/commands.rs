@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::shared::extensions::{AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS};
+
 /// Metadata about a media file on disk
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileMetadata {
@@ -31,9 +33,6 @@ pub fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
         .to_string_lossy()
         .to_lowercase();
 
-    let video_extensions = ["mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv"];
-    let audio_extensions = ["mp3", "wav", "aac", "flac", "ogg", "m4a", "wma"];
-
     Ok(FileMetadata {
         name: file_path
             .file_name()
@@ -43,8 +42,8 @@ pub fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
         path: file_path.to_string_lossy().to_string(),
         size_bytes: metadata.len(),
         extension: extension.clone(),
-        is_video: video_extensions.contains(&extension.as_str()),
-        is_audio: audio_extensions.contains(&extension.as_str()),
+        is_video: VIDEO_EXTENSIONS.contains(&extension.as_str()),
+        is_audio: AUDIO_EXTENSIONS.contains(&extension.as_str()),
     })
 }
 
@@ -57,10 +56,12 @@ pub fn list_media_files(directory: String) -> Result<Vec<FileMetadata>, String> 
         return Err(format!("Not a directory: {}", directory));
     }
 
-    let media_extensions = [
-        "mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv", "mp3", "wav", "aac", "flac",
-        "ogg", "m4a", "wma", "png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp",
-    ];
+    let media_extensions: Vec<&str> = VIDEO_EXTENSIONS
+        .iter()
+        .chain(AUDIO_EXTENSIONS)
+        .chain(IMAGE_EXTENSIONS)
+        .copied()
+        .collect();
 
     let mut files = Vec::new();
 
@@ -79,8 +80,6 @@ pub fn list_media_files(directory: String) -> Result<Vec<FileMetadata>, String> 
 
             if media_extensions.contains(&ext.as_str()) {
                 let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
-                let video_extensions = ["mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv"];
-                let audio_extensions = ["mp3", "wav", "aac", "flac", "ogg", "m4a", "wma"];
 
                 files.push(FileMetadata {
                     name: path
@@ -91,8 +90,8 @@ pub fn list_media_files(directory: String) -> Result<Vec<FileMetadata>, String> 
                     path: path.to_string_lossy().to_string(),
                     size_bytes: metadata.len(),
                     extension: ext.clone(),
-                    is_video: video_extensions.contains(&ext.as_str()),
-                    is_audio: audio_extensions.contains(&ext.as_str()),
+                    is_video: VIDEO_EXTENSIONS.contains(&ext.as_str()),
+                    is_audio: AUDIO_EXTENSIONS.contains(&ext.as_str()),
                 });
             }
         }

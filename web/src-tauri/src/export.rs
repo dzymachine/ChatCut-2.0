@@ -1,11 +1,58 @@
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::State;
+use tempfile::NamedTempFile;
 
-// ─── Data Structures ────────────────────────────────────────────────────────
+/// Cached probe for VideoToolbox hardware encoder availability.
+fn has_videotoolbox() -> bool {
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        match Command::new("ffmpeg")
+            .args(["-hide_banner", "-encoders"])
+            .output()
+        {
+            Ok(out) => {
+                let s = String::from_utf8_lossy(&out.stdout);
+                s.contains("h264_videotoolbox")
+            }
+            Err(_) => false,
+        }
+    })
+}
+
+/// VideoToolbox is bitrate-driven (no CRF), so quality maps to bits-per-pixel.
+fn target_bitrate_kbps(quality: &str, width: u32, height: u32, fps: f64) -> u32 {
+    let bpp = match quality {
+        "low" => 0.04,
+        "medium" => 0.08,
+        "high" => 0.12,
+        "veryhigh" | "vhigh" | "lossless" => 0.20,
+        _ => 0.08,
+    };
+    let pixels = (width as f64) * (height as f64) * fps.max(1.0);
+    ((bpp * pixels) / 1000.0).round().max(500.0) as u32
+}
+
+/// True if `path` has an audio stream (false for GoPro timelapses with only tmcd).
+fn has_audio_stream(path: &str) -> bool {
+    match Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            path,
+        ])
+        .output()
+    {
+        Ok(out) => out.stdout.iter().any(|b| !b.is_ascii_whitespace()),
+        Err(_) => false,
+    }
+}
 
 /// An applied effect instance (mirrors TypeScript AppliedEffect)
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -17,71 +64,46 @@ pub struct AppliedEffect {
     pub enabled: bool,
 }
 
-/// A clip in the export data (mirrors TypeScript Clip, trimmed for export)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExportClip {
-    /// Path to the source media file on disk
     #[serde(rename = "sourcePath")]
     pub source_path: String,
-    /// Start time in the source file (seconds)
     #[serde(rename = "sourceStart")]
     pub source_start: f64,
-    /// End time in the source file (seconds)
     #[serde(rename = "sourceEnd")]
     pub source_end: f64,
-    /// Position on the timeline (seconds)
     #[serde(rename = "timelineStart")]
     pub timeline_start: f64,
-    /// Effect stack
     pub effects: Vec<AppliedEffect>,
-    /// Optional recipe filter graph
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<crate::recipe::Recipe>,
 }
 
-/// Export settings
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExportSettings {
-    /// Output file path
     #[serde(rename = "outputPath")]
     pub output_path: String,
-    /// Output format: "mp4", "webm", "mov"
     pub format: String,
-    /// Video codec: "h264", "h265", "vp9", "prores"
     pub codec: String,
-    /// Output width in pixels
     pub width: u32,
-    /// Output height in pixels
     pub height: u32,
-    /// Frames per second
     pub fps: f64,
-    /// Quality preset: "low", "medium", "high", "lossless"
     pub quality: String,
-    /// Audio codec: "aac", "opus", "pcm"
     #[serde(rename = "audioCodec")]
     pub audio_codec: String,
-    /// Audio bitrate (e.g. "192k")
     #[serde(rename = "audioBitrate")]
     pub audio_bitrate: String,
 }
 
-/// Export progress information
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExportProgress {
-    /// Progress percentage (0.0 to 100.0)
     pub percent: f64,
-    /// Current frame being processed
     pub frame: u64,
-    /// Total frames (estimated)
     #[serde(rename = "totalFrames")]
     pub total_frames: u64,
-    /// Current processing speed (e.g. "2.5x")
     pub speed: String,
-    /// Estimated time remaining in seconds
     pub eta: f64,
-    /// Whether the export is still running
     pub running: bool,
-    /// Error message if failed
     pub error: Option<String>,
 }
 
@@ -101,13 +123,12 @@ pub struct MediaProbeResult {
     pub bit_rate: Option<u64>,
 }
 
-// ─── Export State ────────────────────────────────────────────────────────────
-
 /// Manages the currently running FFmpeg export process
 pub struct ExportState {
     pub child: Option<Child>,
     pub progress: ExportProgress,
     pub total_duration: f64,
+    filter_script: Option<NamedTempFile>,
 }
 
 impl Default for ExportState {
@@ -124,11 +145,10 @@ impl Default for ExportState {
                 error: None,
             },
             total_duration: 0.0,
+            filter_script: None,
         }
     }
 }
-
-// ─── FFmpeg Filter Graph Builder ────────────────────────────────────────────
 
 /// Build the FFmpeg filter string for a single clip's effect stack
 fn build_effect_filters(effects: &[AppliedEffect]) -> Vec<String> {
@@ -343,9 +363,40 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
         return String::new();
     }
 
-    // Sort clips by timeline_start to ensure correct order
     let mut sorted_clips: Vec<&ExportClip> = clips.iter().collect();
     sorted_clips.sort_by(|a, b| a.timeline_start.partial_cmp(&b.timeline_start).unwrap());
+
+    // Probe unique sources for audio presence in parallel — each spawns an
+    // ffprobe subprocess, so parallelism avoids serial latency for N sources.
+    let unique_sources: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        sorted_clips
+            .iter()
+            .filter(|c| seen.insert(c.source_path.clone()))
+            .map(|c| c.source_path.clone())
+            .collect()
+    };
+    let audio_by_source: HashMap<String, bool> = std::thread::scope(|s| {
+        let handles: Vec<_> = unique_sources
+            .iter()
+            .map(|path| {
+                let path = path.clone();
+                s.spawn(move || {
+                    let has = has_audio_stream(&path);
+                    if !has {
+                        eprintln!("[export] source has no audio, will use anullsrc: {}", path);
+                    }
+                    (path, has)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let scale_pad = format!(
+        ",scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2:black",
+        output_width, output_height, output_width, output_height
+    );
 
     let mut filter_parts = Vec::new();
     let mut video_streams = Vec::new();
@@ -376,16 +427,28 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
         let input_a = format!("[{}:a]", i);
         let output_v = format!("[v{}]", stream_index);
         let output_a = format!("[a{}]", stream_index);
+        let source_has_audio = *audio_by_source.get(&clip.source_path).unwrap_or(&false);
+        let clip_duration = (clip.source_end - clip.source_start).max(0.0);
 
         // 1. Trim
         let mut video_chain = format!(
             "{}trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS",
             input_v, clip.source_start, clip.source_end
         );
-        let mut audio_chain = format!(
-            "{}atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS",
-            input_a, clip.source_start, clip.source_end
-        );
+        // Audio chain: if the source actually has audio, trim it like the
+        // video. Otherwise synthesize silence so the downstream graph still
+        // has a valid [a*] label to map to [aout].
+        let mut audio_chain = if source_has_audio {
+            format!(
+                "{}atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS",
+                input_a, clip.source_start, clip.source_end
+            )
+        } else {
+            format!(
+                "anullsrc=channel_layout=stereo:sample_rate=44100:duration={:.6}",
+                clip_duration
+            )
+        };
 
         // 2. Video effects (legacy effect stack)
         let video_effects = build_effect_filters(&clip.effects);
@@ -405,10 +468,7 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
         }
 
         // 3. Scale to output resolution
-        video_chain.push_str(&format!(
-            ",scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2:black",
-            output_width, output_height, output_width, output_height
-        ));
+        video_chain.push_str(&scale_pad);
 
         // 4. Audio effects
         let audio_effects = build_audio_filters(&clip.effects);
@@ -448,9 +508,12 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
 
     // 5. Concatenate all streams
     if video_streams.len() == 1 {
-        // Single stream: rename to output labels
-        filter_parts.push(format!("{}[vout]", video_streams[0]));
-        filter_parts.push(format!("{}[aout]", audio_streams[0]));
+        // Single stream: alias the chain output to [vout] / [aout] via
+        // passthrough filters. Naked `[v0][vout]` is invalid syntax —
+        // FFmpeg parses `[vout]` as a filter name and errors "Filter not
+        // found". `null` / `anull` are stock no-op filters.
+        filter_parts.push(format!("{}null[vout]", video_streams[0]));
+        filter_parts.push(format!("{}anull[aout]", audio_streams[0]));
         return filter_parts.join(";");
     }
 
@@ -468,46 +531,78 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
     filter_parts.join(";")
 }
 
-/// Get codec settings for FFmpeg
-fn get_codec_args(codec: &str, quality: &str) -> Vec<String> {
+/// Prefers VideoToolbox hardware encoders when available; falls back to software CRF.
+fn get_codec_args(codec: &str, quality: &str, width: u32, height: u32, fps: f64) -> Vec<String> {
+    let hw = has_videotoolbox();
     match codec {
         "h264" => {
-            let crf = match quality {
-                "low" => "28",
-                "medium" => "23",
-                "high" => "18",
-                "lossless" => "0",
-                _ => "23",
-            };
-            vec![
-                "-c:v".to_string(),
-                "libx264".to_string(),
-                "-crf".to_string(),
-                crf.to_string(),
-                "-preset".to_string(),
-                "medium".to_string(),
-                "-pix_fmt".to_string(),
-                "yuv420p".to_string(),
-            ]
+            if hw {
+                let kbps = target_bitrate_kbps(quality, width, height, fps);
+                eprintln!("[export] using h264_videotoolbox @ {}k", kbps);
+                vec![
+                    "-c:v".to_string(),
+                    "h264_videotoolbox".to_string(),
+                    "-b:v".to_string(),
+                    format!("{}k", kbps),
+                    "-pix_fmt".to_string(),
+                    "yuv420p".to_string(),
+                ]
+            } else {
+                let crf = match quality {
+                    "low" => "28",
+                    "medium" => "23",
+                    "high" => "18",
+                    "veryhigh" | "vhigh" => "16",
+                    "lossless" => "0",
+                    _ => "23",
+                };
+                vec![
+                    "-c:v".to_string(),
+                    "libx264".to_string(),
+                    "-crf".to_string(),
+                    crf.to_string(),
+                    "-preset".to_string(),
+                    "medium".to_string(),
+                    "-pix_fmt".to_string(),
+                    "yuv420p".to_string(),
+                ]
+            }
         }
         "h265" | "hevc" => {
-            let crf = match quality {
-                "low" => "32",
-                "medium" => "28",
-                "high" => "22",
-                "lossless" => "0",
-                _ => "28",
-            };
-            vec![
-                "-c:v".to_string(),
-                "libx265".to_string(),
-                "-crf".to_string(),
-                crf.to_string(),
-                "-preset".to_string(),
-                "medium".to_string(),
-                "-pix_fmt".to_string(),
-                "yuv420p".to_string(),
-            ]
+            if hw {
+                let kbps = target_bitrate_kbps(quality, width, height, fps);
+                eprintln!("[export] using hevc_videotoolbox @ {}k", kbps);
+                vec![
+                    "-c:v".to_string(),
+                    "hevc_videotoolbox".to_string(),
+                    "-b:v".to_string(),
+                    format!("{}k", kbps),
+                    // hvc1 tag so QuickTime/Apple players accept the stream
+                    "-tag:v".to_string(),
+                    "hvc1".to_string(),
+                    "-pix_fmt".to_string(),
+                    "yuv420p".to_string(),
+                ]
+            } else {
+                let crf = match quality {
+                    "low" => "32",
+                    "medium" => "28",
+                    "high" => "22",
+                    "veryhigh" | "vhigh" => "20",
+                    "lossless" => "0",
+                    _ => "28",
+                };
+                vec![
+                    "-c:v".to_string(),
+                    "libx265".to_string(),
+                    "-crf".to_string(),
+                    crf.to_string(),
+                    "-preset".to_string(),
+                    "medium".to_string(),
+                    "-pix_fmt".to_string(),
+                    "yuv420p".to_string(),
+                ]
+            }
         }
         "vp9" => {
             let crf = match quality {
@@ -561,12 +656,6 @@ fn get_codec_args(codec: &str, quality: &str) -> Vec<String> {
 /// Get audio codec arguments
 fn get_audio_codec_args(audio_codec: &str, bitrate: &str) -> Vec<String> {
     match audio_codec {
-        "aac" => vec![
-            "-c:a".to_string(),
-            "aac".to_string(),
-            "-b:a".to_string(),
-            bitrate.to_string(),
-        ],
         "opus" => vec![
             "-c:a".to_string(),
             "libopus".to_string(),
@@ -577,7 +666,7 @@ fn get_audio_codec_args(audio_codec: &str, bitrate: &str) -> Vec<String> {
             "-c:a".to_string(),
             "pcm_s16le".to_string(),
         ],
-        _ => vec![
+        "aac" | _ => vec![
             "-c:a".to_string(),
             "aac".to_string(),
             "-b:a".to_string(),
@@ -586,8 +675,6 @@ fn get_audio_codec_args(audio_codec: &str, bitrate: &str) -> Vec<String> {
     }
 }
 
-// ─── Tauri Commands ─────────────────────────────────────────────────────────
-
 /// Start exporting a video
 #[tauri::command]
 pub fn export_video(
@@ -595,6 +682,14 @@ pub fn export_video(
     settings: ExportSettings,
     export_state: State<'_, Mutex<ExportState>>,
 ) -> Result<String, String> {
+    eprintln!(
+        "[export] export_video ENTERED — {} clip(s), output={}, codec={}, quality={}",
+        clips.len(),
+        settings.output_path,
+        settings.codec,
+        settings.quality
+    );
+
     let mut state = export_state.lock().map_err(|e| e.to_string())?;
 
     // If there's an existing process, kill it first
@@ -603,6 +698,7 @@ pub fn export_video(
     }
 
     if clips.is_empty() {
+        eprintln!("[export] FAIL: no clips passed in");
         return Err("No clips to export".to_string());
     }
 
@@ -625,18 +721,44 @@ pub fn export_video(
         cmd.arg("-i").arg(&clip.source_path);
     }
 
-    // Build and add filter_complex
+    // Build filter graph and write to a temp file — avoids argv length limits
+    // (as low as ~32KB on Windows) for timelines with many clips/effects.
     let filter_complex = build_filter_complex(&clips, settings.width, settings.height);
+    let mut filter_script: Option<NamedTempFile> = None;
     if !filter_complex.is_empty() {
-        cmd.arg("-filter_complex").arg(&filter_complex);
+        eprintln!("[export] filter_complex = {}", filter_complex);
+        for (i, clip) in clips.iter().enumerate() {
+            if let Some(ref r) = clip.recipe {
+                eprintln!(
+                    "[export] clip[{}] has recipe: {} nodes, {} connections",
+                    i,
+                    r.nodes.len(),
+                    r.connections.len()
+                );
+            }
+        }
 
-        // Map the output streams (always [vout][aout] now)
+        let mut tmp = NamedTempFile::new()
+            .map_err(|e| format!("Failed to create filter script: {}", e))?;
+        tmp.write_all(filter_complex.as_bytes())
+            .map_err(|e| format!("Failed to write filter script: {}", e))?;
+        tmp.flush()
+            .map_err(|e| format!("Failed to flush filter script: {}", e))?;
+        cmd.arg("-filter_complex_script").arg(tmp.path());
+        filter_script = Some(tmp);
+
         cmd.arg("-map").arg("[vout]");
         cmd.arg("-map").arg("[aout]");
     }
 
     // Add codec settings
-    let codec_args = get_codec_args(&settings.codec, &settings.quality);
+    let codec_args = get_codec_args(
+        &settings.codec,
+        &settings.quality,
+        settings.width,
+        settings.height,
+        settings.fps,
+    );
     for arg in &codec_args {
         cmd.arg(arg);
     }
@@ -670,6 +792,7 @@ pub fn export_video(
     })?;
 
     state.child = Some(child);
+    state.filter_script = filter_script;
     state.total_duration = total_duration;
     state.progress = ExportProgress {
         percent: 0.0,
@@ -766,9 +889,29 @@ pub fn get_export_progress(
                             .lines()
                             .filter_map(|l| l.ok())
                             .collect();
+                        // Dump full FFmpeg stderr to the dev terminal so we
+                        // can diagnose. Without this, only the last line is
+                        // surfaced to the UI which loses the actual cause.
+                        eprintln!(
+                            "[export] FFmpeg FAILED (exit {}) — full stderr ({} lines):",
+                            status,
+                            error_lines.len()
+                        );
+                        for line in &error_lines {
+                            eprintln!("[export]   | {}", line);
+                        }
+                        // Find the most-informative error line: prefer the
+                        // first one containing "Error" / "Invalid" / "not
+                        // found" rather than the last (often a generic
+                        // "Conversion failed").
+                        let informative = error_lines.iter().find(|l| {
+                            let lower = l.to_lowercase();
+                            lower.contains("error") || lower.contains("invalid")
+                                || lower.contains("not found") || lower.contains("no such")
+                        });
                         error_msg = Some(
-                            error_lines
-                                .last()
+                            informative
+                                .or_else(|| error_lines.last())
                                 .cloned()
                                 .unwrap_or_else(|| format!("FFmpeg exited with code {}", status)),
                         );
@@ -797,6 +940,7 @@ pub fn get_export_progress(
     }
     if is_finished {
         state.progress.running = false;
+        state.filter_script = None;
     }
     if let Some(err) = error_msg {
         state.progress.error = Some(err);
@@ -817,6 +961,7 @@ pub fn cancel_export(
         state.progress.running = false;
         state.progress.error = Some("Export cancelled by user".to_string());
         state.child = None;
+        state.filter_script = None;
         Ok("Export cancelled".to_string())
     } else {
         Ok("No export in progress".to_string())
