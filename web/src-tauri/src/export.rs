@@ -338,9 +338,9 @@ fn build_audio_filters(effects: &[AppliedEffect]) -> Vec<String> {
 }
 
 /// Build the complete filter_complex string for multi-clip export
-fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: u32) -> String {
+fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: u32) -> Result<String, String> {
     if clips.is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
 
     // Sort clips by timeline_start to ensure correct order
@@ -396,11 +396,11 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
 
         // 2b. Recipe filters (appended after legacy effects)
         if let Some(ref recipe) = clip.recipe {
-            if let Ok(recipe_filters) = crate::recipe::compile_recipe(recipe) {
-                if !recipe_filters.is_empty() {
-                    video_chain.push(',');
-                    video_chain.push_str(&recipe_filters);
-                }
+            let recipe_filters = crate::recipe::validator::validate_recipe_dryrun(recipe)
+                .map_err(|e| format!("Invalid recipe for clip '{}': {}", clip.source_path, e))?;
+            if !recipe_filters.is_empty() {
+                video_chain.push(',');
+                video_chain.push_str(&recipe_filters);
             }
         }
 
@@ -451,7 +451,7 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
         // Single stream: rename to output labels
         filter_parts.push(format!("{}[vout]", video_streams[0]));
         filter_parts.push(format!("{}[aout]", audio_streams[0]));
-        return filter_parts.join(";");
+        return Ok(filter_parts.join(";"));
     }
 
     let concat_input: String = video_streams
@@ -465,7 +465,26 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
         video_streams.len()
     ));
 
-    filter_parts.join(";")
+    Ok(filter_parts.join(";"))
+}
+
+/// Validate that each export clip has required streams before building the filter graph.
+fn validate_export_clips(clips: &[ExportClip]) -> Result<(), String> {
+    for clip in clips {
+        let probe = probe_media(clip.source_path.clone())
+            .map_err(|e| format!("Failed to probe clip '{}': {}", clip.source_path, e))?;
+
+        if probe.width.is_none() || probe.height.is_none() {
+            return Err(format!("Clip '{}' has no video stream", clip.source_path));
+        }
+        if probe.audio_codec.is_none() {
+            return Err(format!("Clip '{}' has no audio stream", clip.source_path));
+        }
+        if clip.source_end <= clip.source_start {
+            return Err(format!("Clip '{}' has invalid source range", clip.source_path));
+        }
+    }
+    Ok(())
 }
 
 /// Get codec settings for FFmpeg
@@ -625,8 +644,12 @@ pub fn export_video(
         cmd.arg("-i").arg(&clip.source_path);
     }
 
+    // Validate clip sources before building the filter graph
+    validate_export_clips(&clips)?;
+
     // Build and add filter_complex
-    let filter_complex = build_filter_complex(&clips, settings.width, settings.height);
+    let filter_complex = build_filter_complex(&clips, settings.width, settings.height)
+        .map_err(|e| format!("Failed to build filter graph: {}", e))?;
     if !filter_complex.is_empty() {
         cmd.arg("-filter_complex").arg(&filter_complex);
 

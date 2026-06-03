@@ -42,6 +42,8 @@ export function Timeline() {
   const toggleLinkForSelection = useEditorStore((s) => s.toggleLinkForSelection);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const leftScrollRef = useRef<HTMLDivElement>(null);
+  const isSyncingScrollRef = useRef(false);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [visibleWidth, setVisibleWidth] = useState(800);
 
@@ -125,10 +127,26 @@ export function Timeline() {
     [panelHeight, setTimelinePanelHeight]
   );
 
-  const handleScroll = useCallback(() => {
-    if (scrollContainerRef.current) {
-      setScrollLeft(scrollContainerRef.current.scrollLeft);
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const container = e.currentTarget;
+    setScrollLeft(container.scrollLeft);
+
+    if (leftScrollRef.current && !isSyncingScrollRef.current) {
+      isSyncingScrollRef.current = true;
+      leftScrollRef.current.scrollTop = container.scrollTop;
+      window.requestAnimationFrame(() => {
+        isSyncingScrollRef.current = false;
+      });
     }
+  }, []);
+
+  const handleHeaderScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (!scrollContainerRef.current || isSyncingScrollRef.current) return;
+    isSyncingScrollRef.current = true;
+    scrollContainerRef.current.scrollTop = e.currentTarget.scrollTop;
+    window.requestAnimationFrame(() => {
+      isSyncingScrollRef.current = false;
+    });
   }, []);
 
   useEffect(() => {
@@ -474,7 +492,11 @@ export function Timeline() {
             </span>
           </div>
 
-          <div className="flex-1 overflow-y-auto overflow-x-hidden">
+          <div
+            ref={leftScrollRef}
+            className="flex-1 overflow-y-auto overflow-x-hidden"
+            onScroll={handleHeaderScroll}
+          >
             {videoTracks.map((track) => (
               <TrackHeader key={track.id} track={track} />
             ))}

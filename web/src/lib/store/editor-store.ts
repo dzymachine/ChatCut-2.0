@@ -129,6 +129,7 @@ export interface EditorStore {
   trimClipEnd: (clipId: string, newSourceEnd: number) => void;
   splitClip: (clipId: string, splitTimeSeconds: number) => [Clip, Clip] | null;
   addTrack: (type: TrackType, label?: string) => Track;
+  removeTrack: (type: TrackType) => void;
 
   // ── Linked Clip Actions ──
   getLinkedClips: (clipId: string) => Clip[];
@@ -1278,10 +1279,15 @@ function createStore() {
     set((state) => {
       const newTracks = [...state.project.tracks];
       if (type === 'video') {
-        // Insert at position 0 (topmost video track = highest compositing priority)
-        newTracks.splice(0, 0, track);
+        // Append to the bottom of the video stack, just above audio tracks.
+        const firstAudioIndex = newTracks.findIndex((track) => track.type === 'audio');
+        if (firstAudioIndex === -1) {
+          newTracks.push(track);
+        } else {
+          newTracks.splice(firstAudioIndex, 0, track);
+        }
       } else if (type === 'audio') {
-        // Append after all existing tracks
+        // Append after all existing tracks.
         newTracks.push(track);
       } else {
         newTracks.push(track);
@@ -1305,6 +1311,72 @@ function createStore() {
     });
 
     return track;
+  },
+
+  removeTrack: (type) => {
+    const prevState = get();
+    const prevTracks = structuredClone(prevState.project.tracks);
+    const prevPlayback = structuredClone(prevState.playback);
+    const trackIds = prevState.project.tracks.filter((track) => track.type === type).map((track) => track.id);
+    if (trackIds.length <= 1) {
+      return;
+    }
+
+    const trackToRemove = type === 'video'
+      ? prevState.project.tracks.find((track) => track.type === 'video' && track.id === trackIds[trackIds.length - 1])
+      : prevState.project.tracks.find((track) => track.type === 'audio' && track.id === trackIds[trackIds.length - 1]);
+    if (!trackToRemove) {
+      return;
+    }
+
+    const removedClipIds = new Set(trackToRemove.clips.map((clip) => clip.id));
+    const removedSourceIds = new Set(trackToRemove.clips.map((clip) => clip.sourceFileId));
+
+    set((state) => {
+      const newTracks = state.project.tracks.filter((track) => track.id !== trackToRemove.id);
+      const duration = calculateDuration(newTracks);
+      const hasClipsLeft = newTracks.some((track) => track.clips.length > 0);
+
+      let newMediaFiles = state.mediaFiles;
+      for (const sourceId of removedSourceIds) {
+        const stillReferenced = newTracks.some((track) =>
+          track.clips.some((clip) => clip.sourceFileId === sourceId)
+        );
+        if (!stillReferenced) {
+          if (newMediaFiles === state.mediaFiles) {
+            newMediaFiles = new Map(state.mediaFiles);
+          }
+          const mediaFile = newMediaFiles.get(sourceId);
+          if (mediaFile?.previewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(mediaFile.previewUrl);
+          }
+          newMediaFiles.delete(sourceId);
+        }
+      }
+
+      return {
+        project: {
+          ...state.project,
+          tracks: newTracks,
+          composition: { ...state.project.composition, duration },
+          updatedAt: Date.now(),
+        },
+        mediaFiles: newMediaFiles,
+        ui: {
+          ...state.ui,
+          selectedClipIds: state.ui.selectedClipIds.filter((id) => !removedClipIds.has(id)),
+        },
+        ...(hasClipsLeft ? {} : { playback: { ...state.playback, isPlaying: false, currentTime: 0 } }),
+      };
+    });
+
+    const afterTracks = structuredClone(get().project.tracks);
+    const afterPlayback = structuredClone(get().playback);
+    get().pushUndo({
+      description: 'Remove track',
+      previousState: { tracks: prevTracks, playback: prevPlayback },
+      nextState: { tracks: afterTracks, playback: afterPlayback },
+    });
   },
 
   // ── Linked Clip Actions ──
