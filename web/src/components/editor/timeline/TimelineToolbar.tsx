@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import { useEditorStore, withUndo } from "@/lib/store/editor-store";
 import { executeAction } from "@/lib/commands/command-handler";
 import type { TimelineTool } from "@/types/editor";
+import { Slider } from "@/components/ui/slider";
 import {
   Tooltip,
   TooltipContent,
@@ -30,16 +31,11 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
   const removeClip = useEditorStore((s) => s.removeClip);
   const currentTime = useEditorStore((s) => s.playback.currentTime);
   const addTrack = useEditorStore((s) => s.addTrack);
+  const removeTrack = useEditorStore((s) => s.removeTrack);
+  const videoTrackCount = useEditorStore((s) => s.project.tracks.filter((track) => track.type === 'video').length);
+  const audioTrackCount = useEditorStore((s) => s.project.tracks.filter((track) => track.type === 'audio').length);
 
   const hasSelection = selectedClipIds.length > 0;
-
-  const handleZoomIn = useCallback(() => {
-    setTimelineZoom(pixelsPerSecond * 1.3);
-  }, [pixelsPerSecond, setTimelineZoom]);
-
-  const handleZoomOut = useCallback(() => {
-    setTimelineZoom(pixelsPerSecond / 1.3);
-  }, [pixelsPerSecond, setTimelineZoom]);
 
   const handleSplit = useCallback(() => {
     for (const clipId of selectedClipIds) {
@@ -196,6 +192,25 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
       {/* Spacer */}
       <div className="flex-1" />
 
+      {/* Subtract Video Track */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => removeTrack("video")}
+            disabled={videoTrackCount <= 1}
+            className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M5 12h14" />
+            </svg>
+            <span className="text-[10px] font-medium text-blue-400">V</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>Remove Video Track</p>
+        </TooltipContent>
+      </Tooltip>
+
       {/* Add Video Track */}
       <Tooltip>
         <TooltipTrigger asChild>
@@ -211,6 +226,25 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
         </TooltipTrigger>
         <TooltipContent side="top">
           <p>Add Video Track</p>
+        </TooltipContent>
+      </Tooltip>
+
+      {/* Subtract Audio Track */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => removeTrack("audio")}
+            disabled={audioTrackCount <= 1}
+            className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M5 12h14" />
+            </svg>
+            <span className="text-[10px] font-medium text-green-400">A</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>Remove Audio Track</p>
         </TooltipContent>
       </Tooltip>
 
@@ -236,45 +270,29 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
       <div className="w-px h-4 bg-neutral-700 mx-1" />
 
       {/* Zoom Controls */}
-      <div className="flex items-center gap-0.5">
+      <div className="flex items-center gap-2 min-w-[180px]">
         <Tooltip>
           <TooltipTrigger asChild>
-            <button
-              onClick={handleZoomOut}
-              className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="8" />
-                <path d="M21 21l-4.35-4.35M8 11h6" />
-              </svg>
-            </button>
+            <div className="flex items-center gap-2 w-full">
+              <span className="text-[10px] text-neutral-500 font-mono">Zoom</span>
+              <Slider
+                value={[pixelsPerSecond]}
+                min={10}
+                max={600}
+                step={1}
+                onValueChange={([value]) => setTimelineZoom(value)}
+                className="w-full"
+              />
+            </div>
           </TooltipTrigger>
           <TooltipContent side="top">
-            <p>Zoom Out</p>
+            <p>Timeline zoom level</p>
           </TooltipContent>
         </Tooltip>
 
-        {/* Zoom level indicator */}
         <span className="text-[10px] text-neutral-500 font-mono min-w-[36px] text-center">
           {Math.round(pixelsPerSecond)}x
         </span>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={handleZoomIn}
-              className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="8" />
-                <path d="M21 21l-4.35-4.35M11 8v6M8 11h6" />
-              </svg>
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <p>Zoom In</p>
-          </TooltipContent>
-        </Tooltip>
 
         <Tooltip>
           <TooltipTrigger asChild>
@@ -283,7 +301,7 @@ export function TimelineToolbar({ onZoomToFit }: TimelineToolbarProps) {
               className="p-1.5 rounded text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                <path d="M15 3h6v-6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
               </svg>
             </button>
           </TooltipTrigger>

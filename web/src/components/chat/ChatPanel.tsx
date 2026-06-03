@@ -38,6 +38,12 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
   const provider = useSettingsStore((s) => s.provider);
   const model = useSettingsStore((s) => s.model);
   const getActiveApiKey = useSettingsStore((s) => s.getActiveApiKey);
+  const [mounted, setMounted] = useState(false);
+
+  // Avoid hydration mismatch for provider/model UI by waiting until client mount.
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Auto-scroll to bottom on new messages or tool-call updates
   useEffect(() => {
@@ -216,7 +222,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
           </div>
           <div className="flex items-center gap-2 min-w-0">
             <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-800 text-[11px] text-neutral-400 font-medium truncate shrink min-w-0">
-              {model}
+              {mounted ? model : "..."}
             </span>
             {onPopOut && (
               <button
