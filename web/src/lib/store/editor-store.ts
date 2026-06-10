@@ -60,6 +60,7 @@ import {
 import type { EditNode, EditNodeSnapshot } from '@/lib/agent/types';
 import { createDefaultEffects, effectsToTransform } from '@/lib/effects/transform-bridge';
 import { getEffectDescriptor } from '@/lib/effects/registry';
+import { findClipById } from '@/lib/timeline/find-clip';
 
 // ─── Store Interface ────────────────────────────────────────────────────────
 
@@ -150,13 +151,10 @@ export interface EditorStore {
   addChatMessage: (message: Omit<ChatMessage, 'id' | 'timestamp'>) => string;
   updateChatMessage: (id: string, updates: Partial<ChatMessage>) => void;
   setChatLoading: (loading: boolean) => void;
-  clearChat: () => void;
 
   // ── UI Actions ──
-  setActivePanel: (panel: UIState['activePanel']) => void;
   setSelectedClip: (clipId: string | null) => void;
   toggleClipSelection: (clipId: string) => void;
-  toggleChat: () => void;
 
   // ── Undo/Redo ──
   pushUndo: (command: Omit<Command, 'id' | 'timestamp'>) => void;
@@ -278,8 +276,8 @@ function createStore() {
     // access the real file via the Tauri FS plugin (avoids sandbox issues).
     // This keeps most of the codebase working with `addMediaFile` and avoids
     // duplicating the path logic in every drop handler.
-    if (isTauri() && (file as any).path) {
-      return get().addMediaFileFromPath((file as any).path, file.name || '');
+    if (isTauri() && file.path) {
+      return get().addMediaFileFromPath(file.path, file.name || '');
     }
 
     const blobUrl = URL.createObjectURL(file);
@@ -785,12 +783,7 @@ function createStore() {
   },
 
   getClipEffects: (clipId) => {
-    const state = get();
-    for (const track of state.project.tracks) {
-      const clip = track.clips.find((c) => c.id === clipId);
-      if (clip) return clip.effects;
-    }
-    return [];
+    return findClipById(get().project.tracks, clipId)?.clip.effects ?? [];
   },
 
   setClipRecipe: (clipId, recipe) => {
@@ -881,16 +874,19 @@ function createStore() {
         }
       }
       if (!primaryClip || !sourceTrackId) return state;
+      // Const alias so closures below keep the non-null narrowing
+      // (`primaryClip` is a `let`, which TS widens inside callbacks).
+      const movedClip: Clip = primaryClip;
 
-      const delta = newTimelineStart - primaryClip.timelineStart;
+      const delta = newTimelineStart - movedClip.timelineStart;
       const targetTrackId = newTrackId ?? sourceTrackId;
 
       // Collect linked clips that should move together
       const linkedIds = new Set<string>();
-      if (primaryClip.linkId && state.ui.linkedSelectionEnabled) {
+      if (movedClip.linkId && state.ui.linkedSelectionEnabled) {
         for (const track of state.project.tracks) {
           for (const c of track.clips) {
-            if (c.linkId === primaryClip.linkId) {
+            if (c.linkId === movedClip.linkId) {
               linkedIds.add(c.id);
             }
           }
@@ -917,7 +913,7 @@ function createStore() {
           return { ...track, clips: track.clips.filter((c) => c.id !== clipId) };
         }
         if (track.id === targetTrackId) {
-          const updatedClip = { ...primaryClip!, timelineStart: Math.max(0, newTimelineStart) };
+          const updatedClip = { ...movedClip, timelineStart: Math.max(0, newTimelineStart) };
           return { ...track, clips: [...track.clips, updatedClip] };
         }
         return track;
@@ -1367,11 +1363,7 @@ function createStore() {
 
   unlinkClip: (clipId) => {
     set((state) => {
-      let targetLinkId: string | null = null;
-      for (const track of state.project.tracks) {
-        const clip = track.clips.find((c) => c.id === clipId);
-        if (clip) { targetLinkId = clip.linkId; break; }
-      }
+      const targetLinkId = findClipById(state.project.tracks, clipId)?.clip.linkId ?? null;
       if (!targetLinkId) return state;
 
       // Remove linkId from all clips in this link group
@@ -1504,15 +1496,7 @@ function createStore() {
     set({ isChatLoading: loading });
   },
 
-  clearChat: () => {
-    set({ chatMessages: [] });
-  },
-
   // ── UI Actions ──
-
-  setActivePanel: (panel) => {
-    set((state) => ({ ui: { ...state.ui, activePanel: panel } }));
-  },
 
   setSelectedClip: (clipId) => {
     set((state) => ({
@@ -1529,12 +1513,6 @@ function createStore() {
       }
       return { ui: { ...state.ui, selectedClipIds: [clipId, ...current] } };
     });
-  },
-
-  toggleChat: () => {
-    set((state) => ({
-      ui: { ...state.ui, isChatOpen: !state.ui.isChatOpen },
-    }));
   },
 
   // ── Undo/Redo ──
@@ -1902,12 +1880,7 @@ function createStore() {
   },
 
   getClipById: (clipId) => {
-    const state = get();
-    for (const track of state.project.tracks) {
-      const clip = track.clips.find((c) => c.id === clipId);
-      if (clip) return clip;
-    }
-    return null;
+    return findClipById(get().project.tracks, clipId)?.clip ?? null;
   },
 
   getClipAtTime: (time) => {

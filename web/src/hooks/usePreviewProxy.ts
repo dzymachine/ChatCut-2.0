@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
+import { findClipById } from "@/lib/timeline/find-clip";
 import {
   convertFileSrc,
   isTauri,
@@ -41,25 +42,20 @@ export function usePreviewProxy(): {
   const fingerprint = useEditorStore((s) => {
     const id = s.ui.selectedClipIds[0];
     if (!id) return "";
-    for (const t of s.project.tracks) {
-      const c = t.clips.find((cc) => cc.id === id);
-      if (c) {
-        if (!c.recipe) return ""; // no recipe → no preview proxy needed
-        const mf = s.mediaFiles.get(c.sourceFileId);
-        if (!mf?.nativePath) return ""; // browser-mode / unresolved → skip
-        return [
-          id,
-          JSON.stringify(c.recipe),
-          c.sourceStart.toFixed(6),
-          c.sourceEnd.toFixed(6),
-          mf.nativePath,
-          mf.width ?? 0,
-          mf.height ?? 0,
-          s.project.composition.fps,
-        ].join("|");
-      }
-    }
-    return "";
+    const c = findClipById(s.project.tracks, id)?.clip;
+    if (!c?.recipe) return ""; // no clip / no recipe → no preview proxy needed
+    const mf = s.mediaFiles.get(c.sourceFileId);
+    if (!mf?.nativePath) return ""; // browser-mode / unresolved → skip
+    return [
+      id,
+      JSON.stringify(c.recipe),
+      c.sourceStart.toFixed(6),
+      c.sourceEnd.toFixed(6),
+      mf.nativePath,
+      mf.width ?? 0,
+      mf.height ?? 0,
+      s.project.composition.fps,
+    ].join("|");
   });
 
   const [isRendering, setIsRendering] = useState(false);
@@ -86,14 +82,7 @@ export function usePreviewProxy(): {
       const state = useEditorStore.getState();
       const clipId = state.ui.selectedClipIds[0];
       if (!clipId) return;
-      let clip = null;
-      for (const t of state.project.tracks) {
-        const c = t.clips.find((cc) => cc.id === clipId);
-        if (c) {
-          clip = c;
-          break;
-        }
-      }
+      const clip = findClipById(state.project.tracks, clipId)?.clip;
       if (!clip || !clip.recipe) return;
       const mediaFile = state.mediaFiles.get(clip.sourceFileId);
       if (!mediaFile?.nativePath) return;

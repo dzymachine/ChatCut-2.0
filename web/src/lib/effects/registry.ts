@@ -7,7 +7,8 @@
  * Adding a new effect:
  *   1. Create the descriptor below
  *   2. Register it in EFFECT_REGISTRY
- *   3. If it needs custom FFmpeg mapping, add it in ffmpeg-mapper.ts
+ *   3. If it needs FFmpeg export support, add a case in
+ *      src-tauri/src/export.rs build_effect_filters
  *   4. The AI will pick it up via the function schemas automatically
  */
 

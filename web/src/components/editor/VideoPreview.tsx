@@ -105,7 +105,7 @@ export function VideoPreview({ onEngineReady }: VideoPreviewProps) {
       e.stopPropagation();
       setIsDragOver(false);
 
-      let files = Array.from(e.dataTransfer.files);
+      const files = Array.from(e.dataTransfer.files);
       if (files.length === 0 && e.dataTransfer.items) {
         for (let i = 0; i < e.dataTransfer.items.length; i++) {
           const item = e.dataTransfer.items[i];

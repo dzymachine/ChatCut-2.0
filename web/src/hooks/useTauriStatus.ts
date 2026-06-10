@@ -5,7 +5,7 @@
  * Provides runtime information about the environment.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { isTauri, checkFFmpeg } from "@/lib/tauri/bridge";
 
 export interface TauriStatus {
@@ -15,33 +15,29 @@ export interface TauriStatus {
   ffmpeg: { available: boolean; version: string } | null;
 }
 
-export function useTauriStatus() {
-  const [status, setStatus] = useState<TauriStatus>({
-    isDesktop: false,
-    ffmpeg: null,
-  });
+// The Tauri global never changes after page load — a static external value.
+// useSyncExternalStore reads it hydration-safely (server snapshot: false).
+const subscribeNever = () => () => {};
 
+export function useTauriStatus(): TauriStatus {
+  const isDesktop = useSyncExternalStore(subscribeNever, isTauri, () => false);
+  const [ffmpeg, setFfmpeg] = useState<TauriStatus["ffmpeg"]>(null);
+
+  // Probe FFmpeg once in desktop mode (async — sets state from a callback).
   useEffect(() => {
-    const isDesktop = isTauri();
-    setStatus((s) => ({ ...s, isDesktop }));
+    if (!isDesktop) return;
+    let cancelled = false;
+    checkFFmpeg()
+      .then((version) => {
+        if (!cancelled) setFfmpeg({ available: true, version });
+      })
+      .catch(() => {
+        if (!cancelled) setFfmpeg({ available: false, version: "" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDesktop]);
 
-    // Check FFmpeg if in desktop mode
-    if (isDesktop) {
-      checkFFmpeg()
-        .then((version) => {
-          setStatus((s) => ({
-            ...s,
-            ffmpeg: { available: true, version },
-          }));
-        })
-        .catch(() => {
-          setStatus((s) => ({
-            ...s,
-            ffmpeg: { available: false, version: "" },
-          }));
-        });
-    }
-  }, []);
-
-  return status;
+  return { isDesktop, ffmpeg };
 }

@@ -374,7 +374,7 @@ export const DEFAULT_UI_STATE: UIState = {
 // ─── Timeline State ─────────────────────────────────────────────────────────
 
 /** Tool modes for timeline interaction. */
-export type TimelineTool = 'select' | 'razor' | 'slip';
+export type TimelineTool = 'select' | 'razor';
 
 /** Persistent timeline panel state stored in the editor store. */
 export interface TimelineState {

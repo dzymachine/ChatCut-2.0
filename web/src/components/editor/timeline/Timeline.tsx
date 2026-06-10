@@ -6,7 +6,7 @@ import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/lib/commands/command-handler";
 import { isTauri } from "@/lib/tauri/bridge";  // desktop helper
 import { TRACK_HEIGHT, RULER_HEIGHT, TRACK_HEADER_WIDTH } from "@/types/editor";
-import type { Track } from "@/types/editor";
+import type { MediaFile } from "@/types/editor";
 import { TimelineToolbar } from "./TimelineToolbar";
 import { TimeRuler } from "./TimeRuler";
 import { TrackHeader } from "./TrackHeader";
@@ -32,7 +32,6 @@ export function Timeline() {
 
   const toggleLinkForSelection = useEditorStore((s) => s.toggleLinkForSelection);
   const linkedSelectionEnabled = useEditorStore((s) => s.ui.linkedSelectionEnabled);
-  const snapEnabled = useEditorStore((s) => s.timeline.snapEnabled);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
@@ -272,7 +271,7 @@ export function Timeline() {
   useEffect(() => {
     if (!isTauri()) return;
 
-    let unlisteners: (() => void)[] = [];
+    const unlisteners: (() => void)[] = [];
 
     const setupListeners = async () => {
       const { listen } = await import('@tauri-apps/api/event');
@@ -287,10 +286,10 @@ export function Timeline() {
       });
       unlisteners.push(unlistenLeave);
 
-      const unlistenDrop = await listen('tauri://drag-drop', async (event: any) => {
+      const unlistenDrop = await listen<{ paths: string[] }>('tauri://drag-drop', async (event) => {
         setIsTimelineDragOver(false);
-        
-        const paths = event.payload?.paths as string[];
+
+        const paths = event.payload?.paths;
         if (!paths || paths.length === 0) return;
 
         // Find the first video file
@@ -375,7 +374,7 @@ export function Timeline() {
       e.stopPropagation();
       setIsTimelineDragOver(false);
 
-      let files = Array.from(e.dataTransfer.files);
+      const files = Array.from(e.dataTransfer.files);
       // some webviews (Tauri on macOS) may not populate `files` directly but
       // the items list still contains a File. use items as a fallback.
       if (files.length === 0 && e.dataTransfer.items) {
@@ -403,11 +402,11 @@ export function Timeline() {
         dropTime = Math.max(0, xInContainer / pixelsPerSecond);
       }
 
-      let mediaFile: any;
+      let mediaFile: MediaFile;
       try {
         // addMediaFile is now path-aware, so it will route to
         // addMediaFileFromPath when running on desktop with a native path.
-        mediaFile = await store.addMediaFile(videoFile as File);
+        mediaFile = await store.addMediaFile(videoFile);
         store.addClipFromMedia(mediaFile, undefined, dropTime);
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Failed to load video";

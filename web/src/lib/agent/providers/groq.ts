@@ -8,6 +8,7 @@
 import Groq from 'groq-sdk';
 import type { ToolDef } from '../../../../src-shared/tools';
 import type { LLMProvider, Message, StreamDelta } from './index';
+import { handleStreamError } from './provider-error';
 
 const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
 
@@ -73,13 +74,13 @@ function convertMessages(messages: Message[]): Groq.Chat.ChatCompletionMessagePa
       continue;
     }
 
-    // Handle block-based content
+    // Handle block-based content — ContentBlock is a discriminated union, so
+    // filter() narrows each branch without casts.
     if (msg.role === 'assistant') {
-      // Extract text and tool calls
-      const textParts = msg.content.filter((b) => b.type === 'text').map((b) => (b as any).text);
+      const textParts = msg.content.filter((b) => b.type === 'text').map((b) => b.text);
       const toolCalls = msg.content
         .filter((b) => b.type === 'tool_use')
-        .map((b: any) => ({
+        .map((b) => ({
           id: b.id,
           type: 'function' as const,
           function: { name: b.name, arguments: JSON.stringify(b.input) },
@@ -89,20 +90,19 @@ function convertMessages(messages: Message[]): Groq.Chat.ChatCompletionMessagePa
         role: 'assistant',
         content: textParts.join('') || null,
         tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-      } as any);
+      });
     } else if (msg.role === 'user') {
-      // Check for tool_result blocks
       const toolResults = msg.content.filter((b) => b.type === 'tool_result');
       if (toolResults.length > 0) {
         for (const tr of toolResults) {
           result.push({
             role: 'tool',
-            tool_call_id: (tr as any).tool_use_id,
-            content: (tr as any).content,
-          } as any);
+            tool_call_id: tr.tool_use_id,
+            content: tr.content,
+          });
         }
       } else {
-        const textParts = msg.content.filter((b) => b.type === 'text').map((b) => (b as any).text);
+        const textParts = msg.content.filter((b) => b.type === 'text').map((b) => b.text);
         result.push({ role: 'user', content: textParts.join('') });
       }
     }
@@ -200,15 +200,8 @@ export class GroqProvider implements LLMProvider {
       }
 
       onDelta({ type: 'done' });
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || signal?.aborted) {
-        onDelta({ type: 'done' });
-        return;
-      }
-      onDelta({
-        type: 'error',
-        content: error?.message || 'Groq API error',
-      });
+    } catch (error: unknown) {
+      handleStreamError(error, 'Groq', onDelta, signal);
     }
   }
 }

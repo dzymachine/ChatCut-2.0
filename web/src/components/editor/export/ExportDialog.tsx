@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
 import { cva } from "class-variance-authority";
 
@@ -127,10 +127,14 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     }
   }, [format, codec, audioCodec]);
 
-  // Get current resolution
-  const resolution = resolutionPreset < RESOLUTION_PRESETS.length - 1
-    ? RESOLUTION_PRESETS[resolutionPreset]
-    : { label: "Custom", width: customWidth, height: customHeight };
+  // Get current resolution (memoized — it feeds the export callback's deps)
+  const resolution = useMemo(
+    () =>
+      resolutionPreset < RESOLUTION_PRESETS.length - 1
+        ? RESOLUTION_PRESETS[resolutionPreset]
+        : { label: "Custom", width: customWidth, height: customHeight },
+    [resolutionPreset, customWidth, customHeight]
+  );
 
   // Effective export fps: explicit choice, else the composition (source) fps.
   const effectiveFps = fpsChoice > 0 ? fpsChoice : project.composition.fps;

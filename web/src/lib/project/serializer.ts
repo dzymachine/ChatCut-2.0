@@ -10,14 +10,14 @@
  * File format: .chatcut (JSON with a version header for future migrations)
  */
 
-import { useEditorStore, type EditorStore } from '@/lib/store/editor-store';
+import { useEditorStore } from '@/lib/store/editor-store';
 import {
   isTauri,
   saveProjectDialog,
   openProjectDialog,
   getAppDataDir,
 } from '@/lib/tauri/bridge';
-import type { Project, Clip, Track, MediaFile } from '@/types/editor';
+import type { Clip, Track, MediaFile } from '@/types/editor';
 import type { AppliedEffect } from '@/types/effects';
 
 // ─── Project File Format ────────────────────────────────────────────────────
@@ -61,6 +61,10 @@ interface SerializedTrack {
   muted: boolean;
   locked: boolean;
   visible: boolean;
+  /** Absent in project files saved before track gain/pan/solo existed. */
+  volume?: number;
+  pan?: number;
+  solo?: boolean;
 }
 
 interface SerializedClip {
@@ -118,6 +122,9 @@ export function serializeProject(): ChatCutProjectFile {
     muted: track.muted,
     locked: track.locked,
     visible: track.visible,
+    volume: track.volume,
+    pan: track.pan,
+    solo: track.solo,
   }));
 
   return {
@@ -240,9 +247,9 @@ export async function applyLoadedProject(file: ChatCutProjectFile): Promise<void
     muted: track.muted,
     locked: track.locked,
     visible: track.visible,
-    volume: (track as unknown as { volume?: number }).volume ?? 1,
-    pan: (track as unknown as { pan?: number }).pan ?? 0,
-    solo: (track as unknown as { solo?: boolean }).solo ?? false,
+    volume: track.volume ?? 1,
+    pan: track.pan ?? 0,
+    solo: track.solo ?? false,
   }));
 
   // Apply to store — replace default project with loaded one

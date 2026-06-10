@@ -7,7 +7,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { ToolDef } from '../../../../src-shared/tools';
-import type { LLMProvider, Message, ContentBlock, StreamDelta } from './index';
+import type { LLMProvider, Message, StreamDelta } from './index';
+import { handleStreamError } from './provider-error';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
@@ -53,12 +54,9 @@ function convertTools(tools: ToolDef[]): Anthropic.Tool[] {
         properties,
         required: required.length > 0 ? required : undefined,
       },
+      // Cache breakpoint on the LAST tool covers system + all tools.
+      ...(index === tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
     };
-
-    // Add cache breakpoint on the LAST tool to cover system + all tools
-    if (index === tools.length - 1) {
-      (toolDef as any).cache_control = { type: 'ephemeral' };
-    }
 
     return toolDef;
   });
@@ -202,15 +200,8 @@ export class AnthropicProvider implements LLMProvider {
       }
 
       onDelta({ type: 'done' });
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || signal?.aborted) {
-        onDelta({ type: 'done' });
-        return;
-      }
-      onDelta({
-        type: 'error',
-        content: error?.message || 'Anthropic API error',
-      });
+    } catch (error: unknown) {
+      handleStreamError(error, 'Anthropic', onDelta, signal);
     }
   }
 }

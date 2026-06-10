@@ -117,7 +117,7 @@ export const TimelineClip = memo(function TimelineClip({
   const isLinked = !!clip.linkId;
 
   const snapTime = useCallback(
-    (time: number, _excludeClipId?: string): number => {
+    (time: number): number => {
       if (!snapEnabled) return time;
 
       const thresholdSec = snapThresholdPx / pixelsPerSecond;
@@ -260,9 +260,9 @@ export const TimelineClip = memo(function TimelineClip({
             let newStart = dragState.current.initialTimelineStart + dtSeconds;
             newStart = Math.max(0, newStart);
 
-            const snappedStart = snapTime(newStart, clip.id);
+            const snappedStart = snapTime(newStart);
             const rightEdge = newStart + clipDuration;
-            const snappedRight = snapTime(rightEdge, clip.id);
+            const snappedRight = snapTime(rightEdge);
             if (Math.abs(snappedRight - rightEdge) < Math.abs(snappedStart - newStart)) {
               newStart = snappedRight - clipDuration;
             } else {
@@ -290,7 +290,7 @@ export const TimelineClip = memo(function TimelineClip({
             const newSourceStart = dragState.current.initialSourceStart + dtSeconds;
             const newTimelineStart = dragState.current.initialTimelineStart + dtSeconds;
 
-            const snappedTlStart = snapTime(Math.max(0, newTimelineStart), clip.id);
+            const snappedTlStart = snapTime(Math.max(0, newTimelineStart));
             const snapDelta = snappedTlStart - newTimelineStart;
             trimClipStart(
               clip.id,
@@ -302,7 +302,7 @@ export const TimelineClip = memo(function TimelineClip({
           case "trim-end": {
             const newSourceEnd = dragState.current.initialSourceEnd + dtSeconds;
             const rightEdge = clip.timelineStart + (newSourceEnd - clip.sourceStart);
-            const snappedRight = snapTime(rightEdge, clip.id);
+            const snappedRight = snapTime(rightEdge);
             const snapDelta = snappedRight - rightEdge;
             trimClipEnd(clip.id, newSourceEnd + snapDelta);
             break;
@@ -347,6 +347,10 @@ export const TimelineClip = memo(function TimelineClip({
       trimClipEnd,
       setSelectedClip,
       toggleClipSelection,
+      allTrackIds,
+      track.id,
+      track.type,
+      trackIndex,
     ]
   );
 

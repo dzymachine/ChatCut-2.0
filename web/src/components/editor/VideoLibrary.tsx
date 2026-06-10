@@ -24,7 +24,7 @@ export function VideoLibrary() {
         seen.add(clip.id);
         return { clip, track, media };
       })
-      .filter(Boolean) as Array<{ clip: typeof clips[number]["clip"]; track: typeof clips[number]["track"]; media: typeof mediaFiles extends Map<infer K, infer V> ? V : never }>;
+      .filter((item) => item !== null);
   }, [clips, mediaFiles]);
 
   if (clipItems.length === 0) {
@@ -62,6 +62,7 @@ export function VideoLibrary() {
                   }}
                 />
               ) : (
+                // eslint-disable-next-line @next/next/no-img-element -- blob/asset URLs from local media; next/image can't optimize them
                 <img
                   src={media.previewUrl}
                   alt={media.name}
