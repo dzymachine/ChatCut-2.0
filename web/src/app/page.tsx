@@ -47,7 +47,7 @@ export default function EditorPage() {
     } catch {
       // ignore
     }
-  }, [isChatFloating]);
+  }, [isChatFloating, isHistoryFloating]);
 
   const handleEngineReady = useCallback(() => {
     setEngineReady(true);

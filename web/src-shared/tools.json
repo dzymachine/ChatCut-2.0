@@ -105,7 +105,7 @@
     {
       "name": "apply_effect",
       "type": "mutation",
-      "description": "Apply a visual or audio effect to a clip.",
+      "description": "Apply ONE visual or audio effect from a fixed registry to a clip. Use this for simple, single-effect requests (e.g. 'add sepia', 'fade out the last 1s', 'rotate 15 degrees'). For requests that combine multiple FFmpeg filters, use custom filters not in this registry, or need a non-trivial filter graph (e.g. 'crush the blacks and add film grain', 'apply a teal-and-orange LUT then sharpen'), prefer `compose_recipe` — it can reach the full FFmpeg filter catalog via `list_filters` / `describe_filter`. Note: only `fade_in`, `fade_out`, `crop`, `vignette`, and CSS-mappable filters (blur, brightness, contrast, saturation, grayscale, sepia, hue_rotate) render in the live preview; other effects only become visible on export.",
       "parameters": {
         "clip_id": {
           "type": "string",
@@ -238,7 +238,7 @@
     {
       "name": "compose_recipe",
       "type": "mutation",
-      "description": "Compose an FFmpeg filter recipe and attach it to a clip. The recipe is a filter graph with nodes (filters + params) connected in sequence. Validates structure before attaching.",
+      "description": "Compose an FFmpeg filter recipe and attach it to a clip. Use this when the user asks for an effect that can't be expressed with a single `apply_effect` call — multi-filter chains, color grading via `eq`/`curves`/`colorbalance`, custom looks via `lut3d`/`colorchannelmixer`, film grain via `noise`, chromakey, etc. WORKFLOW: (1) discover real filters with `list_filter_categories` → `list_filters` → `describe_filter` (gives exact filter names, params, defaults — do not invent filter names from memory). (2) Build `nodes` with `filter` + `params` from describe_filter's response. (3) Connections link `input → first → ... → last → output`. The recipe is then structurally validated AND dry-run through FFmpeg before attaching — if any filter doesn't exist or any param is wrong, the tool returns an error and you should retry. Common pitfalls: `vibrance`, `tonemap` (without lavfi support), `lut3d` with no LUT file path — these are NOT in stock FFmpeg. Stock substitutes: vibrance → `eq` (saturation + per-channel gamma) + `colorchannelmixer`; warm/cool grade → `curves` or `colorbalance`; LUT look → hand-tuned `eq` + `colorchannelmixer`. Recipes render only on export; the live preview won't show them.",
       "parameters": {
         "clip_id": {
           "type": "string",

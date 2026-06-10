@@ -27,9 +27,11 @@ export interface RecipeConnection {
   to: string;   // node id or "output"
 }
 
-/** A complete filter-graph recipe attached to a clip. */
+/** A complete filter-graph recipe attached to a clip.
+ *  `id` is optional because LLM-emitted recipes typically omit it; the
+ *  compose_recipe handler assigns one before storing. */
 export interface Recipe {
-  id: string;
+  id?: string;
   nodes: RecipeNode[];
   connections: RecipeConnection[];
 }

@@ -114,6 +114,8 @@ export interface EditorStore {
   toggleEffect: (clipId: string, appliedEffectId: string, enabled: boolean) => void;
   getClipEffects: (clipId: string) => AppliedEffect[];
   setClipRecipe: (clipId: string, recipe: import('../../../src-shared/recipe').Recipe) => void;
+  /** Ephemeral: set/clear a clip's live-preview proxy URL. Not persisted, not undoable. */
+  setClipPreviewProxy: (clipId: string, url: string | null) => void;
 
   // ── Timeline Actions ──
   setTimelineZoom: (pixelsPerSecond: number) => void;
@@ -798,10 +800,31 @@ function createStore() {
         tracks: state.project.tracks.map((track) => ({
           ...track,
           clips: track.clips.map((clip) =>
-            clip.id === clipId ? { ...clip, recipe } : clip
+            // Changing the recipe invalidates any existing preview proxy.
+            clip.id === clipId ? { ...clip, recipe, previewProxyUrl: undefined } : clip
           ),
         })),
         updatedAt: Date.now(),
+      },
+    }));
+  },
+
+  /**
+   * Ephemeral preview-proxy URL setter. Updates only the clip's `previewProxyUrl`
+   * — does NOT bump `updatedAt` (avoids spurious autosave) and is NOT wrapped in
+   * undo (the proxy is transient view state, not project content). Pass `null`
+   * to clear.
+   */
+  setClipPreviewProxy: (clipId, url) => {
+    set((state) => ({
+      project: {
+        ...state.project,
+        tracks: state.project.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((clip) =>
+            clip.id === clipId ? { ...clip, previewProxyUrl: url ?? undefined } : clip
+          ),
+        })),
       },
     }));
   },

@@ -531,6 +531,139 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
     filter_parts.join(";")
 }
 
+/// Build a standalone single-input filtergraph for ONE clip's preview proxy:
+/// legacy effects → recipe → downscale. Mirrors the per-clip video chain in
+/// `build_filter_complex` minus trim/pad/concat — input `-ss`/`-t` handle the
+/// segment, and a preview proxy needs no composition canvas (no pad). Kept
+/// separate so the verified export path is untouched.
+fn build_single_clip_filter(clip: &ExportClip, out_w: u32, out_h: u32) -> Result<String, String> {
+    let mut parts: Vec<String> = build_effect_filters(&clip.effects);
+    if let Some(ref recipe) = clip.recipe {
+        let rf = crate::recipe::compile_recipe(recipe)?;
+        if !rf.is_empty() {
+            parts.push(rf);
+        }
+    }
+    parts.push(format!("scale={}:{}", out_w, out_h));
+    Ok(format!("[0:v]{}[vout]", parts.join(",")))
+}
+
+/// Stable short hex hash for preview-proxy cache filenames.
+fn short_hash(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Render a fast, low-res, video-only preview proxy (mp4) — or a single still
+/// frame (png) — of ONE clip with its recipe baked in, so the canvas can show
+/// the grade without a full export. Returns the output file path (the frontend
+/// wraps it with convertFileSrc). Cached by content hash; a hit skips encoding.
+/// Runs off the UI thread via spawn_blocking.
+#[tauri::command]
+pub async fn render_recipe_preview(
+    app: tauri::AppHandle,
+    clip: ExportClip,
+    clip_id: String,
+    out_width: u32,
+    out_height: u32,
+    fps: f64,
+    single_frame: Option<f64>,
+) -> Result<String, String> {
+    use tauri::Manager;
+
+    let out_w = (out_width.max(16) / 2) * 2;
+    let out_h = (out_height.max(16) / 2) * 2;
+
+    // Build the graph up front so a recipe compile error surfaces synchronously.
+    let filter = build_single_clip_filter(&clip, out_w, out_h)?;
+
+    // Cache key over everything that affects pixels/timing — NOT recipe alone,
+    // or a trim/dims change would return a stale proxy.
+    let cache_input = format!(
+        "{}|{:?}|{:?}|{:.6}|{:.6}|{}|{}|{:.3}|{:?}",
+        clip.source_path, clip.recipe, clip.effects,
+        clip.source_start, clip.source_end, out_w, out_h, fps, single_frame
+    );
+    let hash = short_hash(&cache_input);
+    let ext = if single_frame.is_some() { "png" } else { "mp4" };
+
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("preview-proxies");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out_path = dir.join(format!("{}-{}.{}", clip_id, hash, ext));
+    let out_path_str = out_path.to_string_lossy().to_string();
+
+    // Cache hit — return immediately, no encode.
+    if out_path.exists() {
+        return Ok(out_path_str);
+    }
+
+    let source_path = clip.source_path.clone();
+    let source_start = clip.source_start;
+    let duration = (clip.source_end - clip.source_start).max(0.0);
+    let task_out = out_path_str.clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.arg("-y");
+        match single_frame {
+            Some(t) => {
+                // Still: input-seek to the (proxy-local) playhead within the clip.
+                cmd.arg("-ss").arg(format!("{:.6}", source_start + t.max(0.0)));
+                cmd.arg("-i").arg(&source_path);
+                cmd.arg("-filter_complex").arg(&filter);
+                cmd.arg("-map").arg("[vout]");
+                cmd.arg("-frames:v").arg("1");
+            }
+            None => {
+                // Proxy: input-seek to clip start, encode the trimmed segment.
+                cmd.arg("-ss").arg(format!("{:.6}", source_start));
+                cmd.arg("-i").arg(&source_path);
+                cmd.arg("-t").arg(format!("{:.6}", duration));
+                cmd.arg("-filter_complex").arg(&filter);
+                cmd.arg("-map").arg("[vout]");
+                cmd.arg("-an"); // video-only (pool <video>s are muted)
+                for a in get_codec_args("h264", "low", out_w, out_h, fps) {
+                    cmd.arg(a);
+                }
+                cmd.arg("-r").arg(format!("{}", fps));
+            }
+        }
+        cmd.arg(&task_out);
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::piped());
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to start FFmpeg: {}. Is it installed?", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let msg = stderr
+                .lines()
+                .rev()
+                .find(|l| {
+                    let x = l.to_lowercase();
+                    x.contains("error") || x.contains("invalid") || x.contains("not found")
+                })
+                .unwrap_or("preview encode failed")
+                .to_string();
+            eprintln!("[preview] ffmpeg failed:\n{}", stderr);
+            return Err(msg);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("preview task join error: {}", e))??;
+
+    eprintln!("[preview] rendered {}", out_path_str);
+    Ok(out_path_str)
+}
+
 /// Prefers VideoToolbox hardware encoders when available; falls back to software CRF.
 fn get_codec_args(codec: &str, quality: &str, width: u32, height: u32, fps: f64) -> Vec<String> {
     let hw = has_videotoolbox();

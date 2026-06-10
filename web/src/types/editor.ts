@@ -103,6 +103,12 @@ export interface Clip {
   // in the export pipeline.
   recipe?: import('../../src-shared/recipe').Recipe;
 
+  // Live-preview proxy (Phase B): asset-protocol URL of a low-res, recipe-baked
+  // proxy the backend rendered, so the canvas shows the grade without exporting.
+  // Ephemeral/in-memory only — NOT serialized to the project file, NOT undoable.
+  // Undefined = use the original source.
+  previewProxyUrl?: string;
+
   // Future: per-clip transitions, keyframes
   transitions: Transition[];
 }
@@ -130,6 +136,10 @@ export interface MediaFile {
   duration: number; // seconds
   width?: number;
   height?: number;
+  /** Source frame rate (fps). Captured via ffprobe in Tauri mode; used to
+   *  set composition.fps on first import so export doesn't downsample
+   *  (e.g. 60fps source → 30fps export). Undefined in browser-only mode. */
+  fps?: number;
 }
 
 // ─── Transforms ─────────────────────────────────────────────────────────────

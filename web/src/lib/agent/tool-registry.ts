@@ -12,6 +12,7 @@
  * so we skip the batch wrapper for `add_clip` to avoid duplicate entries.
  */
 
+import { v4 as uuid } from 'uuid';
 import { TOOLS } from '../../../src-shared/tools';
 import { useEditorStore } from '@/lib/store/editor-store';
 import { getEffectDescriptor } from '@/lib/effects/registry';
@@ -444,7 +445,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
 
   // ── Recipe Tools ──
 
-  compose_recipe: (args) => {
+  compose_recipe: async (args) => {
     const store = useEditorStore.getState();
     let clipId = args.clip_id as string | undefined;
 
@@ -460,12 +461,17 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
       return { success: false, error: `Clip not found: ${clipId}` };
     }
 
-    const recipe = args.recipe as Recipe | undefined;
-    if (!recipe || typeof recipe !== 'object') {
+    const incomingRecipe = args.recipe as Recipe | undefined;
+    if (!incomingRecipe || typeof incomingRecipe !== 'object') {
       return { success: false, error: 'Parameter "recipe" is required.' };
     }
+    // LLMs typically omit the top-level `id`. Inject one so downstream
+    // (Tauri deserialization, project save/load round-trip) stays valid.
+    const recipe: Recipe = incomingRecipe.id
+      ? incomingRecipe
+      : { ...incomingRecipe, id: `recipe-${uuid()}` };
 
-    // Structural validation
+    // Structural validation (cycles, dangling refs, duplicate ids)
     const validation = validateRecipeStructure(recipe);
     if (!validation.valid) {
       return { success: false, error: `Recipe invalid: ${validation.errors.join(', ')}` };
@@ -477,8 +483,42 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
       filterString = compileRecipe(recipe);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      console.error('[ToolRegistry] compose_recipe compile FAILED:', message, recipe);
       return { success: false, error: `Recipe compilation failed: ${message}` };
     }
+
+    // FFmpeg dry-run: catches non-existent filters (e.g. `vibrance` is not in
+    // stock FFmpeg) and bad params BEFORE attaching to the clip. Without this,
+    // invalid recipes silently attach and the user only sees the failure at
+    // export time. Returning the FFmpeg error here lets the LLM see what
+    // happened and retry with valid filters.
+    if (isTauri()) {
+      try {
+        const dryRun = await tauriInvoke<{ valid: boolean; error?: string }>(
+          'validate_recipe',
+          { recipe }
+        );
+        if (!dryRun.valid) {
+          console.warn('[ToolRegistry] compose_recipe DRY-RUN FAILED:', dryRun.error, recipe);
+          return {
+            success: false,
+            error: `FFmpeg rejected the recipe: ${dryRun.error ?? 'unknown error'}. The filter chain compiled but FFmpeg refused it — most often because a filter name doesn't exist in stock FFmpeg (e.g. \`vibrance\`, \`tonemap\` without lavfi support). Use list_filters / describe_filter to confirm filter names before composing, or substitute with stock filters: vibrance → eq+colorchannelmixer, tonemap → eq+curves, etc.`,
+          };
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn('[ToolRegistry] compose_recipe dry-run threw, attaching anyway:', message);
+        // Fall through — don't block on transient Tauri-side failures
+      }
+    }
+
+    console.log('[ToolRegistry] compose_recipe ATTACHED', {
+      clipId,
+      nodeCount: recipe.nodes.length,
+      connectionCount: recipe.connections.length,
+      filterString,
+      recipe,
+    });
 
     store.beginUndoBatch('Compose recipe');
     store.setClipRecipe(clipId, recipe);

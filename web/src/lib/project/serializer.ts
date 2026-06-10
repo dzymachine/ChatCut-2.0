@@ -149,7 +149,13 @@ export function projectToJSON(): string {
  * Note: Media files need to be re-loaded separately after this.
  */
 export function loadProjectFromJSON(json: string): ChatCutProjectFile {
-  const parsed = JSON.parse(json) as ChatCutProjectFile;
+  let parsed: ChatCutProjectFile;
+  try {
+    parsed = JSON.parse(json) as ChatCutProjectFile;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Project file is not valid JSON: ${msg}`);
+  }
 
   // Version check
   if (!parsed.version || parsed.version > PROJECT_FORMAT_VERSION) {

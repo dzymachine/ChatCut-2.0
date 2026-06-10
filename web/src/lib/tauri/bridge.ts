@@ -150,6 +150,31 @@ export async function probeMedia(path: string): Promise<MediaProbeResult> {
   return tauriInvoke<MediaProbeResult>("probe_media", { path });
 }
 
+/**
+ * Render a low-res, recipe-baked preview proxy (mp4) — or a single still frame
+ * (png) when `singleFrame` is a timestamp (proxy-local seconds, 0-based within
+ * the clip's trimmed segment). Returns the native output file path; wrap with
+ * `convertFileSrc()` before assigning to a `<video>`/`<img>` src. Cached by
+ * content hash on the backend; a re-applied recipe is an instant hit.
+ */
+export async function renderRecipePreview(args: {
+  clip: ExportClip;
+  clipId: string;
+  outWidth: number;
+  outHeight: number;
+  fps: number;
+  singleFrame?: number | null;
+}): Promise<string> {
+  return tauriInvoke<string>("render_recipe_preview", {
+    clip: args.clip,
+    clipId: args.clipId,
+    outWidth: args.outWidth,
+    outHeight: args.outHeight,
+    fps: args.fps,
+    singleFrame: args.singleFrame ?? null,
+  });
+}
+
 // ─── Dialog Commands (via Tauri plugin) ──────────────────────────────
 
 /** Open a native file picker dialog for selecting video files */

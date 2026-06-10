@@ -85,6 +85,7 @@ pub fn run() {
             export::get_export_progress,
             export::cancel_export,
             export::probe_media,
+            export::render_recipe_preview,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ChatCut")

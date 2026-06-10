@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettingsStore, type AIProvider } from "@/lib/store/settings-store";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,16 @@ export function ApiKeySetting() {
 
   const [draft, setDraft] = useState(apiKeys[provider]);
   const [saved, setSaved] = useState(false);
+
+  // When the active provider changes, resync the field to that provider's
+  // stored key (read fresh from the store) and clear the saved flag. Without
+  // this the input keeps showing the previously-selected provider's key.
+  // Keyed on `provider` only so saving a key (which mutates apiKeys) doesn't
+  // clobber the "Saved" confirmation or interrupt typing.
+  useEffect(() => {
+    setDraft(useSettingsStore.getState().apiKeys[provider]);
+    setSaved(false);
+  }, [provider]);
 
   const handleSave = () => {
     setApiKey(provider, draft);
@@ -40,7 +50,6 @@ export function ApiKeySetting() {
             setDraft(e.target.value);
             setSaved(false);
           }}
-          onFocus={() => setDraft(apiKeys[provider])}
           placeholder={`Enter ${PROVIDER_LABELS[provider]} API key...`}
           className="flex-1 bg-neutral-800 border-neutral-700 text-neutral-200 placeholder:text-neutral-500 text-xs font-mono"
         />

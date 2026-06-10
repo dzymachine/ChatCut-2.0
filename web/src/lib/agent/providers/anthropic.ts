@@ -165,20 +165,36 @@ export class AnthropicProvider implements LLMProvider {
         } else if (event.type === 'content_block_stop') {
           // If we were accumulating a tool_use block, emit it now
           if (currentToolName) {
-            let parsedArgs: Record<string, unknown> = {};
-            try {
-              if (currentToolInput) {
+            // Tools with no parameters stream no input → empty args is valid.
+            // But if input WAS streamed and fails to parse, the model emitted
+            // malformed JSON: surface the error and SKIP dispatch rather than
+            // silently running the tool with {} (which yields confusing edits).
+            let parsedArgs: Record<string, unknown> | null = {};
+            if (currentToolInput) {
+              try {
                 parsedArgs = JSON.parse(currentToolInput);
+              } catch (err) {
+                parsedArgs = null;
+                console.error(
+                  `[anthropic] Malformed tool arguments for "${currentToolName}" — skipping. Raw input:`,
+                  currentToolInput,
+                  err
+                );
+                onDelta({
+                  type: 'error',
+                  content: `The model produced invalid arguments for "${currentToolName}", so it was skipped. Try rephrasing your request.`,
+                });
               }
-            } catch {
-              // If JSON is malformed, pass empty args
             }
-            onDelta({
-              type: 'tool_use_start',
-              toolName: currentToolName,
-              toolArgs: parsedArgs,
-            });
-            onDelta({ type: 'tool_use_end', toolName: currentToolName });
+
+            if (parsedArgs !== null) {
+              onDelta({
+                type: 'tool_use_start',
+                toolName: currentToolName,
+                toolArgs: parsedArgs,
+              });
+              onDelta({ type: 'tool_use_end', toolName: currentToolName });
+            }
             currentToolName = '';
             currentToolInput = '';
           }
