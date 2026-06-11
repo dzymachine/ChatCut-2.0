@@ -713,28 +713,13 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
       return { success: false, error: 'Parameter "recipe" is required.' };
     }
 
-    // Structural validation first (fast, in-browser)
-    const validation = validateRecipeStructure(recipe);
-    if (!validation.valid) {
-      return { success: true, data: { valid: false, errors: validation.errors } };
+    // An INVALID recipe is a FAILED tool call (success: false) — wrapping it
+    // as success:true/data.valid:false made the tool card show green and let
+    // the model read "success" while the logs showed the FFmpeg rejection.
+    const result = await validateCompileDryRun(recipe);
+    if (!result.ok) {
+      return { success: false, error: result.error };
     }
-
-    // Compile to check syntax
-    let filterString: string;
-    try {
-      filterString = compileRecipe(recipe);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { success: true, data: { valid: false, error: message } };
-    }
-
-    // FFmpeg dry-run via Tauri (if available)
-    if (isTauri()) {
-      const data = await tauriInvoke('validate_recipe', { recipe });
-      return { success: true, data };
-    }
-
-    // Browser-only: return structural + compile validation
-    return { success: true, data: { valid: true, filterString } };
+    return { success: true, data: { valid: true, filterString: result.filterString } };
   },
 };

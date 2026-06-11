@@ -39,16 +39,38 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
   const model = useSettingsStore((s) => s.model);
   const getActiveApiKey = useSettingsStore((s) => s.getActiveApiKey);
 
-  // Auto-scroll to bottom on new messages or tool-call updates
+  // ── Auto-follow scroll ──
+  // Follow the bottom ONLY while the user is pinned there — scrolling up to
+  // read pauses following until they return to the bottom. Scrolling is
+  // coalesced through requestAnimationFrame so rapid streaming deltas move
+  // the viewport once per frame instead of hard-snapping per token.
+  const pinnedToBottomRef = useRef(true);
+  const followRafRef = useRef(0);
+
   useEffect(() => {
-    if (scrollRef.current) {
-      const viewport = scrollRef.current.querySelector(
-        '[data-slot="scroll-area-viewport"]'
-      );
-      if (viewport) {
-        viewport.scrollTop = viewport.scrollHeight;
-      }
-    }
+    const viewport = scrollRef.current?.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    );
+    if (!viewport) return;
+    const onScroll = () => {
+      pinnedToBottomRef.current =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
+    };
+    viewport.addEventListener('scroll', onScroll, { passive: true });
+    return () => viewport.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!pinnedToBottomRef.current) return;
+    const viewport = scrollRef.current?.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    );
+    if (!viewport) return;
+    cancelAnimationFrame(followRafRef.current);
+    followRafRef.current = requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => cancelAnimationFrame(followRafRef.current);
   }, [chatMessages]);
 
   // Auto-resize textarea up to a max height; scroll inside after that.
@@ -249,7 +271,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
           {chatMessages.length === 0 && <EmptyState />}
 
           {chatMessages.map((msg) => (
-            <div key={msg.id} className="min-w-0">
+            <div key={msg.id} className="min-w-0 chat-message-in">
               <ChatMessage message={msg} />
               {/* Render tool call cards for assistant messages */}
               {msg.role === "assistant" &&

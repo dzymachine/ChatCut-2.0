@@ -16,21 +16,9 @@ import {
 import type { ToolDef } from '../../../../src-shared/tools';
 import type { LLMProvider, Message, StreamDelta } from './index';
 import { handleStreamError } from './provider-error';
+import { SYSTEM_PROMPT } from './system-prompt';
 
 const DEFAULT_MODEL = 'gemini-2.5-pro';
-
-const SYSTEM_PROMPT = `You are ChatCut, an AI video editor. You edit video by calling tools. Always use the available tools to fulfill the user's request. Check the timeline state first with get_timeline_state if you need context about what's on the timeline.
-
-When using apply_effect, the parameters object must use the effect's specific parameter ID as the key:
-- brightness: { brightness: <number> } where 0 is normal, positive is brighter, negative is darker
-- contrast: { contrast: <number> } where 1.0 is normal
-- saturation: { saturation: <number> } where 1.0 is normal
-- gaussian_blur: { sigma: <number> }
-- opacity: { opacity: <number> } range 0 to 1
-- scale: { scale: <number> } where 1.0 is 100%
-- rotation: { degrees: <number> }
-
-You can omit clip_id — it defaults to the active/first clip.`;
 
 /** Map one of our tool parameters to a Gemini schema property. */
 function toSchemaProperty(param: {

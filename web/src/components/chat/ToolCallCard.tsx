@@ -12,7 +12,7 @@ export function ToolCallCard({ toolName, args, result }: ToolCallCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
-    <div className="my-1.5 min-w-0 rounded-md border border-neutral-700 bg-neutral-850 overflow-hidden">
+    <div className="chat-message-in my-1.5 min-w-0 rounded-md border border-neutral-700 bg-neutral-850 overflow-hidden">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="flex items-center gap-2 w-full min-w-0 px-3 py-1.5 text-left hover:bg-neutral-800 transition-colors"
