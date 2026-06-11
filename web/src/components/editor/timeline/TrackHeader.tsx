@@ -45,15 +45,7 @@ export const TrackHeader = memo(function TrackHeader({ track }: TrackHeaderProps
       // Route through withUndo so track toggles (mute/solo/lock/visibility)
       // are undoable like every other edit, instead of mutating state directly.
       withUndo(`Track ${track.label}: ${Object.keys(updates).join(", ")}`, () => {
-        useEditorStore.setState((state) => ({
-          project: {
-            ...state.project,
-            tracks: state.project.tracks.map((t) =>
-              t.id === track.id ? { ...t, ...updates } : t
-            ),
-            updatedAt: Date.now(),
-          },
-        }));
+        useEditorStore.getState().updateTrack(track.id, updates);
       });
     },
     [track.id, track.label]
