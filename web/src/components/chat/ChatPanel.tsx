@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
 import { useSettingsStore } from "@/lib/store/settings-store";
 import { runAgentLoop, type StreamDelta } from "@/lib/agent/loop";
+import { processVideoWithBackend } from "@/lib/api/backend";
 import type { ToolCallInfo } from "@/types/editor";
 import { ChatMessage } from "./ChatMessage";
 import { ToolCallCard } from "./ToolCallCard";
@@ -11,6 +12,10 @@ import { EmptyState } from "./EmptyState";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { showToast } from "@/components/ui/toast-notification";
+
+type ChatExecutionMode = "chat" | "video";
+
+const CHAT_MODE_STORAGE_KEY = "chatcut.chatExecutionMode";
 
 interface ChatPanelProps {
   /** True when ChatPanel is rendered inside FloatingChatPanel. Hides the
@@ -25,6 +30,7 @@ interface ChatPanelProps {
 
 export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {}) {
   const [inputValue, setInputValue] = useState("");
+  const [executionMode, setExecutionMode] = useState<ChatExecutionMode>("chat");
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -43,7 +49,24 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
   // Avoid hydration mismatch for provider/model UI by waiting until client mount.
   useEffect(() => {
     setMounted(true);
+    try {
+      const storedMode = window.localStorage.getItem(CHAT_MODE_STORAGE_KEY);
+      if (storedMode === "chat" || storedMode === "video") {
+        setExecutionMode(storedMode);
+      }
+    } catch {
+      // ignore storage errors
+    }
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    try {
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, executionMode);
+    } catch {
+      // ignore storage errors
+    }
+  }, [executionMode, mounted]);
 
   // Auto-scroll to bottom on new messages or tool-call updates
   useEffect(() => {
@@ -76,17 +99,6 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
       // Add user message
       addChatMessage({ role: "user", content: trimmed });
 
-      // Check for API key
-      const apiKey = getActiveApiKey();
-      if (!apiKey) {
-        addChatMessage({
-          role: "assistant",
-          content: `No API key configured for ${provider}. Open settings to add one.`,
-          isError: true,
-        });
-        return;
-      }
-
       // Add loading placeholder
       const assistantMsgId = addChatMessage({
         role: "assistant",
@@ -95,6 +107,91 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
       });
 
       setChatLoading(true);
+      const abortController = new AbortController();
+      abortRef.current = abortController;
+
+      if (executionMode === "video") {
+        const activeClip = useEditorStore.getState().getActiveClip();
+        const mediaFile = activeClip ? useEditorStore.getState().mediaFiles.get(activeClip.sourceFileId) : null;
+
+        if (!activeClip || !mediaFile) {
+          updateChatMessage(assistantMsgId, {
+            content: "Select a video clip before using Video mode.",
+            isLoading: false,
+            isError: true,
+          });
+          setChatLoading(false);
+          abortRef.current = null;
+          return;
+        }
+
+        if (!mediaFile.nativePath) {
+          updateChatMessage(assistantMsgId, {
+            content: "Video mode requires a local desktop file path. Import a clip in the desktop app and try again.",
+            isLoading: false,
+            isError: true,
+          });
+          setChatLoading(false);
+          abortRef.current = null;
+          return;
+        }
+
+        try {
+          const result = await processVideoWithBackend(mediaFile.nativePath, trimmed, abortController.signal);
+          if (result.error || !result.output_path) {
+            updateChatMessage(assistantMsgId, {
+              content: `Error: ${result.message}`,
+              isLoading: false,
+              isError: true,
+            });
+            showToast("error", result.message);
+          } else {
+            const fileName = result.output_path.split(/[\\/]/).pop() || "generated_video.mp4";
+            const media = await useEditorStore.getState().addMediaFileFromPath(result.output_path, fileName);
+            // Replace the active clip's source with the generated media
+            useEditorStore.getState().replaceClipMedia(activeClip.id, media);
+            // Also replace any linked clips (e.g., linked audio) so sources stay in sync
+            const linked = useEditorStore.getState().getLinkedClips(activeClip.id);
+            for (const l of linked) {
+              try {
+                useEditorStore.getState().replaceClipMedia(l.id, media);
+              } catch (e) {
+                // Non-fatal: continue replacing other linked clips
+                console.error('Failed to replace linked clip media', e);
+              }
+            }
+            updateChatMessage(assistantMsgId, {
+              content: "Video successfully generated.",
+              isLoading: false,
+              isError: false,
+            });
+          }
+        } catch (error) {
+          updateChatMessage(assistantMsgId, {
+            content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+            isLoading: false,
+            isError: true,
+          });
+        } finally {
+          setChatLoading(false);
+          abortRef.current = null;
+        }
+
+        return;
+      }
+
+      // Check for API key
+      const apiKey = getActiveApiKey();
+      if (!apiKey) {
+        addChatMessage({
+          role: "assistant",
+          content: `No API key configured for ${provider}. Open settings to add one.`,
+          isError: true,
+        });
+        setChatLoading(false);
+        abortRef.current = null;
+        return;
+      }
 
       // Build message history for the agent
       const history = chatMessages
@@ -104,9 +201,6 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
 
       // Track tool calls for this message
       const msgToolCalls: ToolCallInfo[] = [];
-
-      const abortController = new AbortController();
-      abortRef.current = abortController;
 
       let accumulatedText = "";
 
@@ -197,6 +291,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
       addChatMessage,
       updateChatMessage,
       setChatLoading,
+      executionMode,
     ]
   );
 
@@ -221,8 +316,34 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
             <h2 className="text-sm font-semibold text-neutral-200 truncate">ChatCut</h2>
           </div>
           <div className="flex items-center gap-2 min-w-0">
+            <div className="inline-flex items-center rounded-md border border-neutral-800 bg-neutral-950 p-0.5 text-[11px] font-medium">
+              <button
+                type="button"
+                onClick={() => setExecutionMode("chat")}
+                className={`rounded px-2 py-0.5 transition-colors ${
+                  executionMode === "chat"
+                    ? "bg-blue-600 text-white"
+                    : "text-neutral-500 hover:text-neutral-200"
+                }`}
+                title="Use Effects mode"
+              >
+                Effects
+              </button>
+              <button
+                type="button"
+                onClick={() => setExecutionMode("video")}
+                className={`rounded px-2 py-0.5 transition-colors ${
+                  executionMode === "video"
+                    ? "bg-blue-600 text-white"
+                    : "text-neutral-500 hover:text-neutral-200"
+                }`}
+                title="Generate video from selected clip"
+              >
+                Generate
+              </button>
+            </div>
             <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-neutral-800 text-[11px] text-neutral-400 font-medium truncate shrink min-w-0">
-              {mounted ? model : "..."}
+              {mounted ? (executionMode === "video" ? "Backend video" : model) : "..."}
             </span>
             {onPopOut && (
               <button
@@ -289,7 +410,11 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
                 handleSubmit();
               }
             }}
-            placeholder="Describe what to edit…  (Shift+Enter for newline)"
+            placeholder={
+              executionMode === "video"
+                ? "Describe how to generate/transform the selected video clip…"
+                : "Describe what to edit…  (Shift+Enter for newline)"
+            }
             disabled={isChatLoading}
             rows={1}
             className="w-full resize-none rounded-md bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 disabled:opacity-60 leading-relaxed min-h-[36px] max-h-[160px] overflow-y-auto"
