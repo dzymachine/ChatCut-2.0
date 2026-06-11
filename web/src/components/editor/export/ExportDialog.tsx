@@ -148,17 +148,23 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     }
   }, [project.name, format]);
 
-  // Build export clips from the project
-  const buildExportClips = useCallback((): ExportClip[] => {
+  // Build export clips from the project. Clips whose source asset is missing
+  // (file moved/deleted) are collected so the export can refuse loudly
+  // instead of silently dropping content.
+  const buildExportClips = useCallback((): { clips: ExportClip[]; missing: string[] } => {
     const clips: ExportClip[] = [];
-    const mediaFiles = useEditorStore.getState().mediaFiles;
+    const missing: string[] = [];
+    const assets = useEditorStore.getState().assets;
 
     for (const track of project.tracks) {
       if (track.type !== "video") continue;
 
       for (const clip of track.clips) {
-        const mediaFile = mediaFiles.get(clip.sourceFileId);
-        if (!mediaFile) continue;
+        const mediaFile = assets.get(clip.assetId);
+        if (!mediaFile || mediaFile.status === 'missing' || mediaFile.status === 'error') {
+          missing.push(mediaFile?.name ?? `clip ${clip.id.slice(0, 6)}…`);
+          continue;
+        }
 
         // Use native file path for FFmpeg export (required on desktop)
         const sourcePath = mediaFile.nativePath || mediaFile.previewUrl;
@@ -183,7 +189,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
     // Sort by timeline position
     clips.sort((a, b) => a.timelineStart - b.timelineStart);
-    return clips;
+    return { clips, missing };
   }, [project.tracks]);
 
   // Start export
@@ -203,9 +209,10 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       return;
     }
 
-    const clips = buildExportClips();
+    const { clips, missing } = buildExportClips();
     console.log('[ExportDialog] buildExportClips returned', {
       count: clips.length,
+      missing,
       clips: clips.map((c) => ({
         sourcePath: c.sourcePath,
         sourceStart: c.sourceStart,
@@ -215,6 +222,12 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         effectCount: c.effects?.length ?? 0,
       })),
     });
+    if (missing.length > 0) {
+      setError(
+        `Cannot export — ${missing.length} clip source${missing.length > 1 ? 's are' : ' is'} missing: ${[...new Set(missing)].slice(0, 4).join(', ')}${missing.length > 4 ? '…' : ''}. Relink or remove those clips first.`,
+      );
+      return;
+    }
     if (clips.length === 0) {
       console.warn('[ExportDialog] BAIL: no clips to export');
       setError("No video clips to export. Add media to the timeline first.");

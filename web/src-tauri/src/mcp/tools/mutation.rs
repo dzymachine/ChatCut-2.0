@@ -40,6 +40,9 @@ pub fn add_clip(
 
     let clip = SerializedClip {
         id: uuid::Uuid::new_v4().to_string(),
+        // Written path-style (legacy clip fields); the TS loader resolves
+        // these into the asset library on next open.
+        asset_id: String::new(),
         clip_type,
         source_file_path,
         source_file_name,

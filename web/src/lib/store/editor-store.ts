@@ -61,13 +61,24 @@ import type { EditNode, EditNodeSnapshot } from '@/lib/agent/types';
 import { createDefaultEffects, effectsToTransform } from '@/lib/effects/transform-bridge';
 import { getEffectDescriptor } from '@/lib/effects/registry';
 import { findClipById } from '@/lib/timeline/find-clip';
+import type { Asset } from '@/types/media';
+import {
+  buildAssetFromFile,
+  buildAssetFromPath,
+  browserFileIdentity,
+} from '@/lib/media/asset-manager';
+import { calculateDuration, deriveSequencePatch } from '@/lib/project/sequence';
+
+// Re-exported so timeline drop handlers keep a single import point.
+export { isVideoFile } from '@/lib/media/probe';
 
 // ─── Store Interface ────────────────────────────────────────────────────────
 
 export interface EditorStore {
   // ── Project State ──
   project: Project;
-  mediaFiles: Map<string, MediaFile>;
+  /** Imported source assets, unique per file (dedup by nativePath / file identity). */
+  assets: Map<string, Asset>;
 
   // ── Playback ──
   playback: PlaybackState;
@@ -99,7 +110,7 @@ export interface EditorStore {
   // ── Project Actions ──
   initProject: (name: string, width: number, height: number, fps: number) => void;
   addMediaFile: (file: File) => Promise<MediaFile>;
-  addMediaFileFromPath: (filePath: string, fileName: string) => Promise<MediaFile>;
+  addMediaFileFromPath: (filePath: string, fileName: string, preferredId?: string) => Promise<MediaFile>;
   addClipFromMedia: (mediaFile: MediaFile, trackId?: string, timelineStart?: number) => Clip;
   removeClip: (clipId: string) => void;
 
@@ -242,7 +253,7 @@ function createStore() {
   return create<EditorStore>((set, get) => ({
   // ── Initial State ──
   project: createDefaultProject(),
-  mediaFiles: new Map(),
+  assets: new Map(),
   playback: { ...DEFAULT_PLAYBACK },
   chatMessages: [],
   isChatLoading: false,
@@ -274,103 +285,42 @@ function createStore() {
     // desktop drop/file-picker yields a File object that also has a native
     // `path` property; we prefer using the path handler so that we can
     // access the real file via the Tauri FS plugin (avoids sandbox issues).
-    // This keeps most of the codebase working with `addMediaFile` and avoids
-    // duplicating the path logic in every drop handler.
     if (isTauri() && file.path) {
       return get().addMediaFileFromPath(file.path, file.name || '');
     }
 
-    const blobUrl = URL.createObjectURL(file);
-    const mediaFile: MediaFile = {
-      id: uuid(),
-      name: file.name,
-      type: detectMediaType(file),
-      previewUrl: blobUrl,
-      nativePath: null, // Browser mode — no native path
-      file,
-      duration: 0,
-      width: undefined,
-      height: undefined,
-    };
-
-    // Probe video/audio for duration and dimensions
-    if (mediaFile.type === 'video' || mediaFile.type === 'audio') {
-      const metadata = await probeMediaDuration(blobUrl, mediaFile.type);
-      mediaFile.duration = metadata.duration;
-      if (metadata.width) mediaFile.width = metadata.width;
-      if (metadata.height) mediaFile.height = metadata.height;
-      if (metadata.fps) mediaFile.fps = metadata.fps;
+    // Dedup: importing the same browser File twice returns the same asset.
+    const identity = browserFileIdentity(file);
+    for (const existing of get().assets.values()) {
+      if (existing.file && browserFileIdentity(existing.file) === identity) {
+        return existing;
+      }
     }
 
+    const asset = await buildAssetFromFile(file);
     set((state) => {
-      const newMap = new Map(state.mediaFiles);
-      newMap.set(mediaFile.id, mediaFile);
-      return { mediaFiles: newMap };
+      const newMap = new Map(state.assets);
+      newMap.set(asset.id, asset);
+      return { assets: newMap };
     });
-
-    return mediaFile;
+    return asset;
   },
 
-  addMediaFileFromPath: async (filePath: string, fileName: string): Promise<MediaFile> => {
-    const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
-    const videoExts = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'];
-    const audioExts = ['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a'];
-    const fileType: 'video' | 'audio' | 'image' = videoExts.includes(ext)
-      ? 'video'
-      : audioExts.includes(ext)
-        ? 'audio'
-        : 'image';
-
-    // For video/audio: always read via the FS plugin and create a blob URL.
-    // The Tauri asset protocol doesn't support HTTP Range requests that
-    // <video>/<audio> elements need for streaming playback on macOS.
-    // For images: the asset protocol works fine (no range requests needed).
-    let previewUrl: string;
-
-    if (fileType === 'video' || fileType === 'audio') {
-      const { readFile } = await import('@tauri-apps/plugin-fs');
-      const bytes = await readFile(filePath);
-      const mimeMap: Record<string, string> = {
-        mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
-        mkv: 'video/x-matroska', webm: 'video/webm', m4v: 'video/x-m4v',
-        mp3: 'audio/mpeg', wav: 'audio/wav', aac: 'audio/aac',
-        flac: 'audio/flac', ogg: 'audio/ogg', m4a: 'audio/mp4',
-      };
-      const mime = mimeMap[ext] || (fileType === 'audio' ? 'audio/mpeg' : 'video/mp4');
-      const blob = new Blob([bytes], { type: mime });
-      previewUrl = URL.createObjectURL(blob);
-    } else {
-      const { convertFileSrc } = await import('@/lib/tauri/bridge');
-      previewUrl = await convertFileSrc(filePath);
+  addMediaFileFromPath: async (filePath: string, fileName: string, preferredId?: string): Promise<MediaFile> => {
+    // Dedup by native path: importing the same file twice returns the SAME
+    // asset (one library entry, N clips). A 'missing' asset is re-resolved.
+    const existing = [...get().assets.values()].find((a) => a.nativePath === filePath);
+    if (existing && existing.status !== 'missing' && existing.status !== 'error') {
+      return existing;
     }
 
-    const mediaFile: MediaFile = {
-      id: uuid(),
-      name: fileName,
-      type: fileType,
-      previewUrl,
-      nativePath: filePath,
-      duration: 0,
-      width: undefined,
-      height: undefined,
-    };
-
-    // Probe for duration/dimensions
-    if (mediaFile.type === 'video' || mediaFile.type === 'audio') {
-      const metadata = await probeMediaDuration(previewUrl, mediaFile.type, filePath);
-      mediaFile.duration = metadata.duration;
-      if (metadata.width) mediaFile.width = metadata.width;
-      if (metadata.height) mediaFile.height = metadata.height;
-      if (metadata.fps) mediaFile.fps = metadata.fps;
-    }
-
+    const asset = await buildAssetFromPath(filePath, fileName, existing?.id ?? preferredId);
     set((state) => {
-      const newMap = new Map(state.mediaFiles);
-      newMap.set(mediaFile.id, mediaFile);
-      return { mediaFiles: newMap };
+      const newMap = new Map(state.assets);
+      newMap.set(asset.id, asset);
+      return { assets: newMap };
     });
-
-    return mediaFile;
+    return asset;
   },
 
   addClipFromMedia: (mediaFile: MediaFile, trackId?: string, timelineStart?: number) => {
@@ -396,14 +346,14 @@ function createStore() {
     );
 
     // For video files, create a shared linkId for the video+audio pair
-    const sharedLinkId = mediaFile.type === 'video' ? uuid() : null;
+    const sharedLinkId = mediaFile.kind === 'video' ? uuid() : null;
+    const clipDuration = mediaFile.duration;
 
     const clip: Clip = {
       id: uuid(),
-      type: mediaFile.type === 'video' ? 'video' : mediaFile.type === 'audio' ? 'audio' : 'image',
-      sourceFileId: mediaFile.id,
+      assetId: mediaFile.id,
       sourceStart: 0,
-      sourceEnd: mediaFile.duration,
+      sourceEnd: clipDuration,
       timelineStart: startPos,
       linkId: sharedLinkId,
       transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
@@ -411,69 +361,79 @@ function createStore() {
       transitions: [],
     };
 
-    // For video files, also create a linked audio clip on the corresponding audio track
+    // For video files, also create a linked audio clip. Target the first
+    // audio track with free space over the clip's span; if none exists (or
+    // all are occupied), append a new audio track. This replaces the old
+    // index-based V1→A1 pairing, which broke for video-only track layouts.
     let audioClip: Clip | null = null;
-    let audioTrack: Track | null = null;
-    if (mediaFile.type === 'video') {
-      // Find the audio track that corresponds to the target video track's position
-      const videoTracks = state.project.tracks.filter((t) => t.type === 'video');
+    let audioTrackId: string | null = null;
+    let newAudioTrack: Track | null = null;
+    if (mediaFile.kind === 'video') {
       const audioTracks = state.project.tracks.filter((t) => t.type === 'audio');
-      const targetVideoIndex = videoTracks.findIndex((t) => t.id === targetTrack.id);
-      
-      // Match audio track to video track by index (V1→A1, V2→A2, V3→A3)
-      if (targetVideoIndex >= 0 && targetVideoIndex < audioTracks.length) {
-        audioTrack = audioTracks[targetVideoIndex];
-        audioClip = {
+      const clipEnd = startPos + clipDuration;
+      const freeTrack = audioTracks.find((t) =>
+        !t.locked &&
+        t.clips.every((c) => {
+          const cEnd = c.timelineStart + (c.sourceEnd - c.sourceStart);
+          return cEnd <= startPos || c.timelineStart >= clipEnd;
+        })
+      );
+
+      if (freeTrack) {
+        audioTrackId = freeTrack.id;
+      } else {
+        newAudioTrack = {
           id: uuid(),
           type: 'audio',
-          sourceFileId: mediaFile.id,
-          sourceStart: 0,
-          sourceEnd: mediaFile.duration,
-          timelineStart: startPos,
-          linkId: sharedLinkId,
-          transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
-          effects: createDefaultEffects(),
-          transitions: [],
+          label: `A${audioTracks.length + 1}`,
+          ...defaultTrackProps,
+          clips: [],
         };
+        audioTrackId = newAudioTrack.id;
       }
+
+      audioClip = {
+        id: uuid(),
+        assetId: mediaFile.id,
+        sourceStart: 0,
+        sourceEnd: clipDuration,
+        timelineStart: startPos,
+        linkId: sharedLinkId,
+        transform: { ...DEFAULT_TRANSFORM, filters: { ...DEFAULT_TRANSFORM.filters } },
+        effects: createDefaultEffects(),
+        transitions: [],
+      };
     }
 
     set((state) => {
       // First real clip in the project? (Checked against pre-update tracks.)
       const isFirstClip = state.project.tracks.every((t) => t.clips.length === 0);
 
-      const newTracks = state.project.tracks.map((track) => {
+      let newTracks = state.project.tracks.map((track) => {
         if (track.id === targetTrack.id) {
           return { ...track, clips: [...track.clips, clip] };
         }
-        if (audioClip && audioTrack && track.id === audioTrack.id) {
+        if (audioClip && audioTrackId && track.id === audioTrackId) {
           return { ...track, clips: [...track.clips, audioClip] };
         }
         return track;
       });
 
-      // Recalculate composition duration
-      const duration = calculateDuration(newTracks);
+      // A brand-new audio track is appended at the end (below existing audio).
+      if (audioClip && newAudioTrack) {
+        newTracks = [...newTracks, { ...newAudioTrack, clips: [audioClip] }];
+      }
 
-      // On the FIRST clip, adopt the source's dimensions + frame rate so the
-      // composition matches the media. This covers every add path (timeline
-      // drop, chat, AI) — without it, chat/AI-driven adds keep the default
-      // 30fps even from a 60fps source (export would then downsample).
-      // Subsequent clips conform to the now-established composition.
-      const compositionFromSource = isFirstClip
-        ? {
-            ...(mediaFile.width && mediaFile.height
-              ? { width: mediaFile.width, height: mediaFile.height }
-              : {}),
-            ...(mediaFile.fps ? { fps: mediaFile.fps } : {}),
-          }
-        : {};
+      // Sequence derivation: duration always; on the FIRST clip also adopt the
+      // source's dims + fps so every add path (drop, chat, AI) matches the
+      // media instead of the project default.
+      const sequencePatch = deriveSequencePatch(newTracks, isFirstClip ? mediaFile : null);
 
       return {
         project: {
           ...state.project,
           tracks: newTracks,
-          composition: { ...state.project.composition, duration, ...compositionFromSource },
+          composition: { ...state.project.composition, ...sequencePatch },
           updatedAt: Date.now(),
         },
         ui: { ...state.ui, selectedClipIds: [clip.id] },
@@ -511,12 +471,12 @@ function createStore() {
       }
     }
 
-    // Collect all source file IDs referenced by removed clips
-    const removedSourceIds = new Set<string>();
+    // Collect all asset IDs referenced by removed clips
+    const removedAssetIds = new Set<string>();
     for (const track of prevState.project.tracks) {
       for (const c of track.clips) {
         if (idsToRemove.has(c.id)) {
-          removedSourceIds.add(c.sourceFileId);
+          removedAssetIds.add(c.assetId);
         }
       }
     }
@@ -529,22 +489,25 @@ function createStore() {
       const duration = calculateDuration(newTracks);
       const hasClipsLeft = newTracks.some((t) => t.clips.length > 0);
 
-      // Revoke blob URLs for media files no longer referenced
-      let newMediaFiles = state.mediaFiles;
-      for (const sourceId of removedSourceIds) {
+      // GC assets no longer referenced by any clip. Blob preview URLs hold
+      // the whole file in memory, so we revoke + drop rather than keeping
+      // unreferenced assets in the library. (A persistent library needs lazy
+      // URL re-resolution — future work, noted in the W2 plan.)
+      let newAssets = state.assets;
+      for (const assetId of removedAssetIds) {
         const stillReferenced = newTracks.some((t) =>
-          t.clips.some((c) => c.sourceFileId === sourceId)
+          t.clips.some((c) => c.assetId === assetId)
         );
         if (!stillReferenced) {
-          if (newMediaFiles === state.mediaFiles) {
-            newMediaFiles = new Map(state.mediaFiles);
+          if (newAssets === state.assets) {
+            newAssets = new Map(state.assets);
           }
-          const mediaFile = newMediaFiles.get(sourceId);
-          if (mediaFile?.previewUrl?.startsWith('blob:')) {
-            URL.revokeObjectURL(mediaFile.previewUrl);
+          const asset = newAssets.get(assetId);
+          if (asset?.previewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(asset.previewUrl);
           }
-          newMediaFiles.delete(sourceId);
-          try { getVideoEngine().releasePoolSource(sourceId); } catch {}
+          newAssets.delete(assetId);
+          try { getVideoEngine().releasePoolSource(assetId); } catch {}
         }
       }
 
@@ -555,7 +518,7 @@ function createStore() {
           composition: { ...state.project.composition, duration },
           updatedAt: Date.now(),
         },
-        mediaFiles: newMediaFiles,
+        assets: newAssets,
         ui: {
           ...state.ui,
           selectedClipIds: state.ui.selectedClipIds.filter((id) => !idsToRemove.has(id)),
@@ -1130,7 +1093,7 @@ function createStore() {
 
   trimClipEnd: (clipId, newSourceEnd) => {
     set((state) => {
-      const mediaFiles = state.mediaFiles;
+      const assets = state.assets;
 
       // Find the primary clip to get its linkId and compute delta
       let primaryClip: Clip | null = null;
@@ -1156,8 +1119,8 @@ function createStore() {
         ...track,
         clips: track.clips.map((clip) => {
           if (!linkedIds.has(clip.id)) return clip;
-          const mediaFile = mediaFiles.get(clip.sourceFileId);
-          const maxEnd = mediaFile?.duration ?? clip.sourceEnd;
+          const asset = assets.get(clip.assetId);
+          const maxEnd = asset?.duration ?? clip.sourceEnd;
           const clampedSourceEnd = Math.min(maxEnd, Math.max(clip.sourceEnd + sourceEndDelta, clip.sourceStart + 0.05));
           return { ...clip, sourceEnd: clampedSourceEnd };
         }),
@@ -1298,11 +1261,7 @@ function createStore() {
 
     const state = get();
     const count = state.project.tracks.filter((t) => t.type === type).length;
-    const defaultLabel = type === 'video'
-      ? `V${count + 1}`
-      : type === 'audio'
-        ? `A${count + 1}`
-        : `${type.charAt(0).toUpperCase() + type.slice(1)} ${count + 1}`;
+    const defaultLabel = type === 'video' ? `V${count + 1}` : `A${count + 1}`;
     const track: Track = {
       id: uuid(),
       type,
@@ -1930,7 +1889,9 @@ function isStoreShapeValid(store: ReturnType<typeof createStore>): boolean {
       Array.isArray(s.editHistory) &&
       (s.editHistory.length === 0 || 'snapshot' in s.editHistory[0]) &&
       'activeNodeId' in s &&
-      (s.activeNodeId === null || typeof s.activeNodeId === 'string')
+      (s.activeNodeId === null || typeof s.activeNodeId === 'string') &&
+      // W2 Asset model: a pre-rename cached store (mediaFiles key) is stale.
+      s.assets instanceof Map
     );
   } catch {
     return false;
@@ -1970,17 +1931,7 @@ export function withUndo(description: string, fn: () => void): void {
 }
 
 // ─── Utility Functions ──────────────────────────────────────────────────────
-
-function calculateDuration(tracks: Track[]): number {
-  let maxEnd = 0;
-  for (const track of tracks) {
-    for (const clip of track.clips) {
-      const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
-      maxEnd = Math.max(maxEnd, clipEnd);
-    }
-  }
-  return maxEnd;
-}
+// (calculateDuration moved to lib/project/sequence.ts — imported above.)
 
 /**
  * Sync built-in effects from a Transform value.
@@ -2055,124 +2006,3 @@ function syncEffectsFromTransform(effects: AppliedEffect[], transform: Transform
   return result;
 }
 
-/**
- * Probe a media file for duration/dimensions using a temporary HTML element.
- * Includes a timeout so the promise never hangs indefinitely.
- * If the browser probe fails in Tauri mode, falls back to FFprobe via the Rust backend.
- */
-async function probeMediaDuration(
-  url: string,
-  type: 'video' | 'audio',
-  nativePath?: string | null,
-): Promise<{ duration: number; width?: number; height?: number; fps?: number }> {
-  const TIMEOUT_MS = 8000;
-
-  // The browser <video>/<audio> element exposes duration + dimensions but
-  // NOT frame rate. When a native path is available (Tauri), fetch fps from
-  // ffprobe so composition.fps can match the source. Best-effort.
-  const fetchFps = async (): Promise<number | undefined> => {
-    if (!nativePath) return undefined;
-    try {
-      const { probeMedia } = await import('@/lib/tauri/bridge');
-      const result = await probeMedia(nativePath);
-      return result.fps && result.fps > 0 ? result.fps : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-
-  try {
-    const raw = await new Promise<{ duration: number; width?: number; height?: number }>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error('Media metadata probe timed out'));
-      }, TIMEOUT_MS);
-
-      if (type === 'video') {
-        const video = document.createElement('video');
-        video.preload = 'metadata';
-        video.onloadedmetadata = () => {
-          clearTimeout(timer);
-          resolve({
-            duration: video.duration,
-            width: video.videoWidth,
-            height: video.videoHeight,
-          });
-          video.src = '';
-        };
-        video.onerror = () => {
-          clearTimeout(timer);
-          reject(new Error('Failed to load video metadata via browser'));
-        };
-        video.src = url;
-      } else {
-        const audio = document.createElement('audio');
-        audio.preload = 'metadata';
-        audio.onloadedmetadata = () => {
-          clearTimeout(timer);
-          resolve({ duration: audio.duration });
-        };
-        audio.onerror = () => {
-          clearTimeout(timer);
-          reject(new Error('Failed to load audio metadata via browser'));
-        };
-        audio.src = url;
-      }
-    });
-
-    if (!Number.isFinite(raw.duration) || raw.duration <= 0) {
-      console.warn('[probeMediaDuration] Invalid duration from browser:', raw.duration);
-      throw new Error(`Invalid media duration: ${raw.duration}`);
-    }
-    // Browser probe gave duration/dims; augment with fps from ffprobe.
-    const fps = type === 'video' ? await fetchFps() : undefined;
-    return { ...raw, fps };
-  } catch (browserError) {
-    if (nativePath) {
-      try {
-        const { probeMedia } = await import('@/lib/tauri/bridge');
-        const result = await probeMedia(nativePath);
-        if (Number.isFinite(result.duration) && result.duration > 0) {
-          return {
-            duration: result.duration,
-            width: result.width ?? undefined,
-            height: result.height ?? undefined,
-            fps: result.fps && result.fps > 0 ? result.fps : undefined,
-          };
-        }
-        console.warn('[probeMediaDuration] FFprobe returned invalid duration:', result.duration);
-      } catch (ffprobeError) {
-        console.warn('[probeMediaDuration] FFprobe fallback also failed:', ffprobeError);
-      }
-    }
-    throw browserError;
-  }
-}
-
-// ─── Media Type Detection ────────────────────────────────────────────────────
-// Some platforms (e.g. macOS WKWebView / Tauri) don't always set `file.type`
-// correctly, so we fall back to extension checks.
-
-const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv', 'ogg', 'ts', 'mts']);
-const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma']);
-
-function fileExtension(name: string): string {
-  return (name.split('.').pop() || '').toLowerCase();
-}
-
-/** Detect whether a File is video, audio, or image. */
-function detectMediaType(file: File): 'video' | 'audio' | 'image' {
-  if (file.type.startsWith('video/')) return 'video';
-  if (file.type.startsWith('audio/')) return 'audio';
-  if (file.type.startsWith('image/')) return 'image';
-  // MIME type missing — fall back to extension
-  const ext = fileExtension(file.name);
-  if (VIDEO_EXTENSIONS.has(ext)) return 'video';
-  if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
-  return 'image';
-}
-
-/** Check if a File looks like a supported video (MIME or extension). */
-export function isVideoFile(file: File): boolean {
-  if (file.type.startsWith('video/')) return true;
-  return VIDEO_EXTENSIONS.has(fileExtension(file.name));
-}

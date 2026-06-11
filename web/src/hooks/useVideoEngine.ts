@@ -110,7 +110,7 @@ export function useVideoEngine() {
     }
     if (!firstVideoClip) return;
 
-    const mediaFile = state.mediaFiles.get(firstVideoClip.sourceFileId);
+    const mediaFile = state.assets.get(firstVideoClip.assetId);
     if (!mediaFile?.previewUrl) return;
 
     engine.loadSource(mediaFile.previewUrl).then(() => {

@@ -44,7 +44,7 @@ export function usePreviewProxy(): {
     if (!id) return "";
     const c = findClipById(s.project.tracks, id)?.clip;
     if (!c?.recipe) return ""; // no clip / no recipe → no preview proxy needed
-    const mf = s.mediaFiles.get(c.sourceFileId);
+    const mf = s.assets.get(c.assetId);
     if (!mf?.nativePath) return ""; // browser-mode / unresolved → skip
     return [
       id,
@@ -84,7 +84,7 @@ export function usePreviewProxy(): {
       if (!clipId) return;
       const clip = findClipById(state.project.tracks, clipId)?.clip;
       if (!clip || !clip.recipe) return;
-      const mediaFile = state.mediaFiles.get(clip.sourceFileId);
+      const mediaFile = state.assets.get(clip.assetId);
       if (!mediaFile?.nativePath) return;
 
       // Even output dims preserving source aspect.

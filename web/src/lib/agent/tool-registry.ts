@@ -130,7 +130,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
     const store = useEditorStore.getState();
     return {
       success: true,
-      data: Array.from(store.mediaFiles.values()),
+      data: Array.from(store.assets.values()),
     };
   },
 
@@ -159,7 +159,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
       return { success: false, error: 'Parameter "media_file_id" is required.' };
     }
 
-    const mediaFile = store.mediaFiles.get(mediaFileId);
+    const mediaFile = store.assets.get(mediaFileId);
     if (!mediaFile) {
       return { success: false, error: `Media file not found: ${mediaFileId}` };
     }
