@@ -13,6 +13,24 @@ pub struct Recipe {
     pub id: String,
     pub nodes: Vec<RecipeNode>,
     pub connections: Vec<RecipeConnection>,
+    /// Append-only revision log (compose/append/refine provenance).
+    /// Not consumed during compile; round-tripped for the frontend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<RecipeRevision>,
+}
+
+/// One entry in a recipe's append-only history (mirrors the TS type).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeRevision {
+    pub id: String,
+    pub op: String,
+    #[serde(default)]
+    pub added_node_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub ts: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -25,6 +43,9 @@ pub struct RecipeNode {
     pub params: HashMap<String, RecipeParamValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
+    /// Which revision added this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
 }
 
 impl RecipeNode {

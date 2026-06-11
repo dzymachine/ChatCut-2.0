@@ -1,0 +1,169 @@
+{
+  "$schema": "./recipe-templates.schema.json",
+  "version": "1",
+  "comment": "Seed recipe templates. Every chain is dry-run validated against stock FFmpeg 8.x. The agent fuzzy-searches these via search_recipe_templates and may apply verbatim or tweak parameters.",
+  "templates": [
+    {
+      "id": "tpl-psychedelic",
+      "name": "Psychedelic",
+      "tags": ["psychedelic", "trippy", "rainbow", "hue", "acid", "colorful"],
+      "description": "Continuously rotating hue with boosted saturation and contrast — a trippy, kaleidoscopic wash.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "raw": "hue=H='2*PI*t':s=2" },
+          { "id": "n2", "filter": "eq", "params": { "contrast": 1.3, "saturation": 1.6 } }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "output" }
+        ]
+      }
+    },
+    {
+      "id": "tpl-vhs",
+      "name": "VHS Tape",
+      "tags": ["vhs", "retro", "analog", "80s", "tape", "lofi", "vintage"],
+      "description": "Soft, noisy analog-tape look: desaturated, grainy, slightly blurred with chroma fringing.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "filter": "format", "params": { "pix_fmts": "yuv420p" } },
+          { "id": "n2", "filter": "eq", "params": { "saturation": 0.85, "contrast": 1.05 } },
+          { "id": "n3", "filter": "noise", "params": { "alls": 12, "allf": "t+u" } },
+          { "id": "n4", "filter": "gblur", "params": { "sigma": 0.6 } },
+          { "id": "n5", "filter": "rgbashift", "params": { "rh": 2, "bh": -2 } }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3" },
+          { "from": "n3", "to": "n4" },
+          { "from": "n4", "to": "n5" },
+          { "from": "n5", "to": "output" }
+        ]
+      }
+    },
+    {
+      "id": "tpl-teal-orange",
+      "name": "Teal & Orange",
+      "tags": ["teal", "orange", "blockbuster", "cinematic", "film look", "grade", "hollywood"],
+      "description": "The classic blockbuster grade: teal-pushed shadows, warm orange highlights, saturated and punchy.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "raw": "curves=blue='0/0.06 0.5/0.45 1/0.92':red='0/0.02 0.5/0.55 1/1'" },
+          { "id": "n2", "filter": "eq", "params": { "saturation": 1.25, "contrast": 1.1 } },
+          { "id": "n3", "filter": "colorbalance", "params": { "bs": 0.15, "rh": 0.12 } }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3" },
+          { "from": "n3", "to": "output" }
+        ]
+      }
+    },
+    {
+      "id": "tpl-film-noir",
+      "name": "Film Noir",
+      "tags": ["noir", "black and white", "bw", "monochrome", "dramatic", "moody", "classic"],
+      "description": "High-contrast black & white with a heavy vignette and live grain — hard-boiled and moody.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "filter": "hue", "params": { "s": 0 } },
+          { "id": "n2", "filter": "eq", "params": { "contrast": 1.45, "brightness": -0.03 } },
+          { "id": "n3", "raw": "vignette=PI/5" },
+          { "id": "n4", "filter": "noise", "params": { "alls": 8, "allf": "t" } }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3" },
+          { "from": "n3", "to": "n4" },
+          { "from": "n4", "to": "output" }
+        ]
+      }
+    },
+    {
+      "id": "tpl-vaporwave",
+      "name": "Vaporwave",
+      "tags": ["vaporwave", "synthwave", "pink", "purple", "neon", "aesthetic", "dreamcore"],
+      "description": "Pink-purple shifted hues with lifted blues and a soft glow — mall-at-midnight aesthetic.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "filter": "hue", "params": { "h": 15, "s": 1.4 } },
+          { "id": "n2", "filter": "colorbalance", "params": { "rs": 0.18, "bs": 0.25, "bh": 0.2 } },
+          { "id": "n3", "filter": "gblur", "params": { "sigma": 0.4 } },
+          { "id": "n4", "filter": "eq", "params": { "brightness": 0.04 } }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3" },
+          { "from": "n3", "to": "n4" },
+          { "from": "n4", "to": "output" }
+        ]
+      }
+    },
+    {
+      "id": "tpl-dreamy-soft",
+      "name": "Dreamy Soft Focus",
+      "tags": ["dreamy", "soft", "glow", "ethereal", "romantic", "hazy", "bloom"],
+      "description": "Gentle blur with lifted brightness, reduced contrast, and a negative-unsharp glow.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "filter": "gblur", "params": { "sigma": 1.2 } },
+          { "id": "n2", "filter": "eq", "params": { "brightness": 0.06, "saturation": 1.1, "contrast": 0.92 } },
+          { "id": "n3", "filter": "unsharp", "params": { "lx": 5, "ly": 5, "la": -0.8 } },
+          { "id": "n4", "raw": "vignette=PI/6" }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3" },
+          { "from": "n3", "to": "n4" },
+          { "from": "n4", "to": "output" }
+        ]
+      }
+    },
+    {
+      "id": "tpl-warm-film",
+      "name": "Warm Film",
+      "tags": ["warm", "film", "kodak", "golden", "nostalgia", "analog", "sunset"],
+      "description": "Lifted blacks, warm golden cast, subtle grain and vignette — nostalgic film-stock feel.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "raw": "curves=master='0/0.04 0.5/0.52 1/0.96':blue='0/0 1/0.92'" },
+          { "id": "n2", "filter": "eq", "params": { "saturation": 1.08 } },
+          { "id": "n3", "filter": "noise", "params": { "alls": 6, "allf": "t" } },
+          { "id": "n4", "raw": "vignette=PI/7" }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3" },
+          { "from": "n3", "to": "n4" },
+          { "from": "n4", "to": "output" }
+        ]
+      }
+    },
+    {
+      "id": "tpl-glitch",
+      "name": "Glitch",
+      "tags": ["glitch", "digital", "corrupted", "cyberpunk", "datamosh", "chromatic aberration"],
+      "description": "Heavy RGB channel displacement with patterned noise — corrupted-signal energy.",
+      "recipe": {
+        "nodes": [
+          { "id": "n1", "filter": "rgbashift", "params": { "rh": 4, "gv": 3, "bh": -4 } },
+          { "id": "n2", "filter": "noise", "params": { "alls": 18, "allf": "t+p" } },
+          { "id": "n3", "filter": "eq", "params": { "contrast": 1.2, "saturation": 1.3 } }
+        ],
+        "connections": [
+          { "from": "input", "to": "n1" },
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3" },
+          { "from": "n3", "to": "output" }
+        ]
+      }
+    }
+  ]
+}

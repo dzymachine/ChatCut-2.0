@@ -81,6 +81,7 @@ pub fn run() {
             commands::list_filters,
             commands::describe_filter,
             commands::validate_recipe,
+            commands::list_luts,
             export::export_video,
             export::get_export_progress,
             export::cancel_export,

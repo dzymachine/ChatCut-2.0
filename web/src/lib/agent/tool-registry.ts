@@ -19,9 +19,73 @@ import { getEffectDescriptor } from '@/lib/effects/registry';
 import { isTauri } from '@/lib/tauri/bridge';
 import { compileRecipe } from '@/lib/recipe/compiler';
 import { validateRecipeStructure } from '@/lib/recipe/validator';
+import { appendToRecipe, refineRecipe, withComposeRevision, type RecipeFragment } from '@/lib/recipe/merge';
+import { appendLearnedTemplate, searchTemplates } from '@/lib/recipe/template-cache';
+import creativeFiltersJson from '../../../src-shared/creative-filters.json';
 import { summarizeEditNode } from './summarize';
 import type { Recipe } from '../../../src-shared/recipe';
 import type { ToolCall, ToolResult } from './types';
+
+/**
+ * Shared validation pipeline for every recipe mutation: structural check →
+ * compile → FFmpeg dry-run (catches hallucinated filters like `vibrance`
+ * before they attach). Returns the compiled filter string on success.
+ */
+async function validateCompileDryRun(
+  recipe: Recipe,
+): Promise<{ ok: true; filterString: string } | { ok: false; error: string }> {
+  const validation = validateRecipeStructure(recipe);
+  if (!validation.valid) {
+    return { ok: false, error: `Recipe invalid: ${validation.errors.join(', ')}` };
+  }
+
+  let filterString: string;
+  try {
+    filterString = compileRecipe(recipe);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Recipe compilation failed: ${message}` };
+  }
+
+  if (isTauri()) {
+    try {
+      const dryRun = await tauriInvoke<{ valid: boolean; error?: string }>('validate_recipe', {
+        recipe,
+      });
+      if (!dryRun.valid) {
+        return {
+          ok: false,
+          error: `FFmpeg rejected the recipe: ${dryRun.error ?? 'unknown error'}. The chain compiled but FFmpeg refused it — most often a filter that doesn't exist in stock FFmpeg (e.g. \`vibrance\`). Use list_filters / describe_filter / list_creative_filters to confirm names, or substitute stock filters (vibrance → eq+colorchannelmixer).`,
+        };
+      }
+    } catch (err) {
+      // Transient Tauri-side failure — don't block on it.
+      console.warn('[ToolRegistry] recipe dry-run threw, continuing:', err);
+    }
+  }
+
+  return { ok: true, filterString };
+}
+
+/** Resolve the target clip for recipe tools: explicit clip_id or selection. */
+function resolveRecipeClip(args: Record<string, unknown>):
+  | { ok: true; clipId: string; recipe?: Recipe }
+  | { ok: false; error: string } {
+  const store = useEditorStore.getState();
+  let clipId = args.clip_id as string | undefined;
+  if (!clipId) {
+    const activeClip = store.getActiveClip();
+    if (!activeClip) {
+      return { ok: false, error: 'No clip_id provided and no clip is currently selected.' };
+    }
+    clipId = activeClip.id;
+  }
+  const clip = store.getClipById(clipId);
+  if (!clip) {
+    return { ok: false, error: `Clip not found: ${clipId}` };
+  }
+  return { ok: true, clipId, recipe: clip.recipe };
+}
 
 // ─── Tool Execution ────────────────────────────────────────────────────────────
 
@@ -447,84 +511,200 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
 
   compose_recipe: async (args) => {
     const store = useEditorStore.getState();
-    let clipId = args.clip_id as string | undefined;
+    const target = resolveRecipeClip(args);
+    if (!target.ok) return { success: false, error: target.error };
 
-    if (!clipId) {
-      const activeClip = store.getActiveClip();
-      if (!activeClip) {
-        return { success: false, error: 'No clip_id provided and no clip is currently selected.' };
-      }
-      clipId = activeClip.id;
-    }
-
-    if (!store.getClipById(clipId)) {
-      return { success: false, error: `Clip not found: ${clipId}` };
+    // compose SEEDS a recipe. Growing or rewriting an existing one goes
+    // through append_to_recipe / refine_recipe so the revision log stays
+    // honest (append-only until the user asks to refine).
+    if (target.recipe && target.recipe.nodes.length > 0) {
+      return {
+        success: false,
+        error: `Clip ${target.clipId} already has a recipe (${target.recipe.nodes.length} nodes). Use append_to_recipe to ADD to it, or refine_recipe to rewrite it (only when the user explicitly asks to simplify/redo the look). Use get_recipe to inspect the current graph.`,
+      };
     }
 
     const incomingRecipe = args.recipe as Recipe | undefined;
     if (!incomingRecipe || typeof incomingRecipe !== 'object') {
       return { success: false, error: 'Parameter "recipe" is required.' };
     }
+    const prompt = args.prompt as string | undefined;
     // LLMs typically omit the top-level `id`. Inject one so downstream
     // (Tauri deserialization, project save/load round-trip) stays valid.
-    const recipe: Recipe = incomingRecipe.id
-      ? incomingRecipe
-      : { ...incomingRecipe, id: `recipe-${uuid()}` };
+    const recipe = withComposeRevision(
+      incomingRecipe.id ? incomingRecipe : { ...incomingRecipe, id: `recipe-${uuid()}` },
+      prompt,
+    );
 
-    // Structural validation (cycles, dangling refs, duplicate ids)
-    const validation = validateRecipeStructure(recipe);
-    if (!validation.valid) {
-      return { success: false, error: `Recipe invalid: ${validation.errors.join(', ')}` };
-    }
-
-    // Compile to filter string
-    let filterString: string;
-    try {
-      filterString = compileRecipe(recipe);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('[ToolRegistry] compose_recipe compile FAILED:', message, recipe);
-      return { success: false, error: `Recipe compilation failed: ${message}` };
-    }
-
-    // FFmpeg dry-run: catches non-existent filters (e.g. `vibrance` is not in
-    // stock FFmpeg) and bad params BEFORE attaching to the clip. Without this,
-    // invalid recipes silently attach and the user only sees the failure at
-    // export time. Returning the FFmpeg error here lets the LLM see what
-    // happened and retry with valid filters.
-    if (isTauri()) {
-      try {
-        const dryRun = await tauriInvoke<{ valid: boolean; error?: string }>(
-          'validate_recipe',
-          { recipe }
-        );
-        if (!dryRun.valid) {
-          console.warn('[ToolRegistry] compose_recipe DRY-RUN FAILED:', dryRun.error, recipe);
-          return {
-            success: false,
-            error: `FFmpeg rejected the recipe: ${dryRun.error ?? 'unknown error'}. The filter chain compiled but FFmpeg refused it — most often because a filter name doesn't exist in stock FFmpeg (e.g. \`vibrance\`, \`tonemap\` without lavfi support). Use list_filters / describe_filter to confirm filter names before composing, or substitute with stock filters: vibrance → eq+colorchannelmixer, tonemap → eq+curves, etc.`,
-          };
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn('[ToolRegistry] compose_recipe dry-run threw, attaching anyway:', message);
-        // Fall through — don't block on transient Tauri-side failures
-      }
-    }
-
-    console.log('[ToolRegistry] compose_recipe ATTACHED', {
-      clipId,
-      nodeCount: recipe.nodes.length,
-      connectionCount: recipe.connections.length,
-      filterString,
-      recipe,
-    });
+    const result = await validateCompileDryRun(recipe);
+    if (!result.ok) return { success: false, error: result.error };
 
     store.beginUndoBatch('Compose recipe');
-    store.setClipRecipe(clipId, recipe);
+    store.setClipRecipe(target.clipId, recipe);
     store.commitUndoBatch();
 
-    return { success: true, data: { clipId, filterString } };
+    // Learn the look (fire-and-forget) so it's searchable next session.
+    if (prompt) {
+      void appendLearnedTemplate({ name: prompt.slice(0, 60), prompt, recipe });
+    }
+
+    console.log('[ToolRegistry] compose_recipe SEEDED', {
+      clipId: target.clipId,
+      nodeCount: recipe.nodes.length,
+      filterString: result.filterString,
+    });
+    return { success: true, data: { clipId: target.clipId, filterString: result.filterString } };
+  },
+
+  append_to_recipe: async (args) => {
+    const store = useEditorStore.getState();
+    const target = resolveRecipeClip(args);
+    if (!target.ok) return { success: false, error: target.error };
+
+    const fragment = args.fragment as RecipeFragment | undefined;
+    if (!fragment || !Array.isArray(fragment.nodes)) {
+      return {
+        success: false,
+        error: 'Parameter "fragment" is required: { nodes: RecipeNode[], connections?: RecipeConnection[] }. Within a fragment, "input" = the END of the existing recipe and "output" = the clip output.',
+      };
+    }
+    const prompt = args.prompt as string | undefined;
+
+    const current: Recipe = target.recipe ?? {
+      id: `recipe-${uuid()}`,
+      nodes: [],
+      connections: [],
+    };
+
+    const merge = appendToRecipe(current, fragment, prompt);
+    if (!merge.ok) return { success: false, error: merge.error };
+
+    // Validate the MERGED graph — an append that breaks the whole chain is
+    // rejected atomically (the existing recipe stays untouched).
+    const result = await validateCompileDryRun(merge.recipe);
+    if (!result.ok) return { success: false, error: result.error };
+
+    store.beginUndoBatch('Append to recipe');
+    store.setClipRecipe(target.clipId, merge.recipe);
+    store.commitUndoBatch();
+
+    if (prompt) {
+      void appendLearnedTemplate({ name: prompt.slice(0, 60), prompt, recipe: merge.recipe });
+    }
+
+    console.log('[ToolRegistry] append_to_recipe', {
+      clipId: target.clipId,
+      added: merge.revision.addedNodeIds,
+      totalNodes: merge.recipe.nodes.length,
+      revisions: merge.recipe.revisions?.length,
+    });
+    return {
+      success: true,
+      data: {
+        clipId: target.clipId,
+        addedNodeIds: merge.revision.addedNodeIds,
+        totalNodes: merge.recipe.nodes.length,
+        filterString: result.filterString,
+      },
+    };
+  },
+
+  refine_recipe: async (args) => {
+    const store = useEditorStore.getState();
+    const target = resolveRecipeClip(args);
+    if (!target.ok) return { success: false, error: target.error };
+
+    const incomingRecipe = args.recipe as Recipe | undefined;
+    if (!incomingRecipe || typeof incomingRecipe !== 'object') {
+      return { success: false, error: 'Parameter "recipe" (the full replacement graph) is required.' };
+    }
+    const prompt = args.prompt as string | undefined;
+
+    const { recipe, revision } = refineRecipe(target.recipe, incomingRecipe, prompt);
+
+    const result = await validateCompileDryRun(recipe);
+    if (!result.ok) return { success: false, error: result.error };
+
+    store.beginUndoBatch('Refine recipe');
+    store.setClipRecipe(target.clipId, recipe);
+    store.commitUndoBatch();
+
+    console.log('[ToolRegistry] refine_recipe', {
+      clipId: target.clipId,
+      nodeCount: recipe.nodes.length,
+      revisionId: revision.id,
+    });
+    return { success: true, data: { clipId: target.clipId, filterString: result.filterString } };
+  },
+
+  get_recipe: (args) => {
+    const target = resolveRecipeClip(args);
+    if (!target.ok) return { success: false, error: target.error };
+
+    if (!target.recipe || target.recipe.nodes.length === 0) {
+      return { success: true, data: { clipId: target.clipId, hasRecipe: false } };
+    }
+
+    let filterString = '';
+    try {
+      filterString = compileRecipe(target.recipe);
+    } catch {
+      // Compile failure on a stored recipe shouldn't block introspection.
+    }
+    return {
+      success: true,
+      data: {
+        clipId: target.clipId,
+        hasRecipe: true,
+        recipe: target.recipe,
+        filterString,
+        revisions: target.recipe.revisions ?? [],
+      },
+    };
+  },
+
+  search_recipe_templates: async (args) => {
+    const query = args.query as string | undefined;
+    if (!query) {
+      return { success: false, error: 'Parameter "query" is required (e.g. "vhs", "teal orange film look").' };
+    }
+    const matches = await searchTemplates(query);
+    return {
+      success: true,
+      data: {
+        matches: matches.map((t) => ({
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          learned: t.learned ?? false,
+          recipe: t.recipe,
+        })),
+        hint: matches.length === 0
+          ? 'No template matched — compose a recipe from scratch (list_creative_filters has grounded building blocks).'
+          : 'Apply a match verbatim via compose_recipe (recipe-less clip) or adapt its nodes; tweak params to taste.',
+      },
+    };
+  },
+
+  list_creative_filters: () => {
+    return {
+      success: true,
+      data: (creativeFiltersJson as { filters: unknown[] }).filters,
+    };
+  },
+
+  list_luts: async () => {
+    if (!isTauri()) {
+      return { success: false, error: 'LUTs require the desktop app (FFmpeg needs filesystem paths).' };
+    }
+    const luts = await tauriInvoke<Array<{ name: string; path: string }>>('list_luts');
+    return {
+      success: true,
+      data: {
+        luts,
+        hint: "Apply via a raw node: raw: \"lut3d='<path>'\". Partial strength: raw: \"split[__a][__b];[__b]lut3d='<path>'[__g];[__a][__g]blend=all_expr='A*(1-I)+B*I'\" with I = intensity 0..1.",
+      },
+    };
   },
 
   validate_recipe: async (args) => {

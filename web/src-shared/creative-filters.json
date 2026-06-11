@@ -1,0 +1,121 @@
+{
+  "version": "1",
+  "comment": "Curated knowledge layer: high-value stock FFmpeg filters with what they're FOR and a worked example. Surfaced to the agent via list_creative_filters so composing looks is grounded instead of guessed. All filters verified present in stock FFmpeg 8.x.",
+  "filters": [
+    {
+      "filter": "curves",
+      "purpose": "Per-channel tone curves — THE color-grading primitive (lift shadows, roll highlights, split-tone).",
+      "example": "curves=blue='0/0.06 0.5/0.45 1/0.92':red='0/0.02 0.5/0.55 1/1'"
+    },
+    {
+      "filter": "colorbalance",
+      "purpose": "Push shadows/midtones/highlights toward a color independently (rs/gs/bs, rm/gm/bm, rh/gh/bh, each -1..1).",
+      "example": "colorbalance=bs=0.15:rh=0.12"
+    },
+    {
+      "filter": "colorchannelmixer",
+      "purpose": "Remix RGB channels into each other — cross-process, sepia, channel-swap looks.",
+      "example": "colorchannelmixer=rr=1.05:rb=-0.03:bb=0.82:br=0.04"
+    },
+    {
+      "filter": "eq",
+      "purpose": "Basic brightness/contrast/saturation/gamma — the workhorse finishing pass.",
+      "example": "eq=contrast=1.1:saturation=1.25:brightness=-0.02"
+    },
+    {
+      "filter": "hue",
+      "purpose": "Rotate hue / scale saturation; supports time expressions for animated color cycling.",
+      "example": "hue=H='2*PI*t':s=1.5"
+    },
+    {
+      "filter": "huesaturation",
+      "purpose": "Targeted hue/sat/intensity adjustment with per-color-range selection (like an HSL qualifier).",
+      "example": "huesaturation=hue=20:saturation=0.3:colors=r"
+    },
+    {
+      "filter": "selectivecolor",
+      "purpose": "CMYK adjustments within named color ranges — 'make the reds more orange' style asks.",
+      "example": "selectivecolor=reds='0.2 0 0 0':blues='-0.1 0 0 0.1'"
+    },
+    {
+      "filter": "lut3d",
+      "purpose": "Apply a .cube 3D LUT — the universal Resolve/Premiere look-interchange format. Call list_luts for available files; use a raw node with the path single-quoted. Dial intensity below 100% via the split+blend pattern (see 'split + blend').",
+      "example": "raw: \"lut3d='/path/to/teal_orange.cube'\""
+    },
+    {
+      "filter": "noise",
+      "purpose": "Film grain / analog noise; allf=t makes it temporal (live grain), +u uniform, +p patterned.",
+      "example": "noise=alls=10:allf=t+u"
+    },
+    {
+      "filter": "gblur",
+      "purpose": "Gaussian blur — soft focus, glow bases, dreamy looks (combine with negative unsharp).",
+      "example": "gblur=sigma=1.2:steps=2"
+    },
+    {
+      "filter": "unsharp",
+      "purpose": "Sharpen (positive amount) or smooth-glow (negative amount).",
+      "example": "unsharp=lx=5:ly=5:la=1.2"
+    },
+    {
+      "filter": "vignette",
+      "purpose": "Darken frame edges; angle controls strength (PI/5 strong, PI/7 subtle).",
+      "example": "vignette=PI/6"
+    },
+    {
+      "filter": "rgbashift",
+      "purpose": "Shift R/G/B planes independently — chromatic aberration, glitch, 3D-anaglyph vibes.",
+      "example": "rgbashift=rh=3:bh=-3"
+    },
+    {
+      "filter": "tblend",
+      "purpose": "Blend consecutive FRAMES — motion trails, echo/ghosting (all_mode + all_opacity).",
+      "example": "tblend=all_mode=average:all_opacity=0.6"
+    },
+    {
+      "filter": "lagfun",
+      "purpose": "Decaying frame buffer — light-trail / long-exposure streaks from bright areas.",
+      "example": "lagfun=decay=0.96"
+    },
+    {
+      "filter": "chromakey",
+      "purpose": "Key out a color (green screen) to transparency; pair with overlay for compositing.",
+      "example": "chromakey=green:0.1:0.05"
+    },
+    {
+      "filter": "maskedmerge",
+      "purpose": "Merge two streams through a grayscale mask — region-selective grading (needs labeled multi-stream graph).",
+      "example": "[base][graded][mask]maskedmerge"
+    },
+    {
+      "filter": "split + blend",
+      "purpose": "Intensity-dial ANY look: split the stream, grade one branch, blend back at N%. Works inline mid-chain.",
+      "example": "split[__a][__b];[__b]hue=s=0[__g];[__a][__g]blend=all_expr='A*(1-0.6)+B*0.6'"
+    },
+    {
+      "filter": "minterpolate",
+      "purpose": "Motion-interpolated frame rate conversion — smooth slow motion (SLOW to encode).",
+      "example": "minterpolate=fps=60:mi_mode=mci"
+    },
+    {
+      "filter": "zoompan",
+      "purpose": "Ken Burns pan & zoom via expressions over time.",
+      "example": "zoompan=z='min(zoom+0.0015,1.5)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    },
+    {
+      "filter": "pixelize",
+      "purpose": "Mosaic/censor blocks — retro pixel-art or privacy masking.",
+      "example": "pixelize=width=16:height=16"
+    },
+    {
+      "filter": "deshake",
+      "purpose": "Single-pass camera stabilization for mild shake.",
+      "example": "deshake=rx=16:ry=16"
+    },
+    {
+      "filter": "hqdn3d",
+      "purpose": "Spatio-temporal denoise — clean up noisy footage BEFORE grading.",
+      "example": "hqdn3d=4:3:6:4"
+    }
+  ]
+}
