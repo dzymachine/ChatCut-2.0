@@ -175,6 +175,38 @@ export async function renderRecipePreview(args: {
   });
 }
 
+// ─── Generation Commands ─────────────────────────────────────────────
+
+export interface GenerationProgress {
+  id: string;
+  stage: 'extracting' | 'enriching' | 'uploading' | 'generating' | 'downloading' | 'done' | 'failed' | 'cancelled';
+  percent: number;
+  message: string;
+  outputPath: string | null;
+  error: string | null;
+  running: boolean;
+}
+
+/** Start a Runway video-to-video generation; returns the generation id. */
+export async function startGeneration(request: {
+  sourcePath: string;
+  sourceStart: number;
+  sourceEnd: number;
+  prompt: string;
+  runwayApiKey: string;
+  anthropicApiKey?: string | null;
+}): Promise<string> {
+  return tauriInvoke<string>('start_generation', { request });
+}
+
+export async function getGenerationProgress(id: string): Promise<GenerationProgress> {
+  return tauriInvoke<GenerationProgress>('get_generation_progress', { id });
+}
+
+export async function cancelGeneration(id: string): Promise<void> {
+  return tauriInvoke<void>('cancel_generation', { id });
+}
+
 // ─── Dialog Commands (via Tauri plugin) ──────────────────────────────
 
 /** Open a native file picker dialog for selecting video files */

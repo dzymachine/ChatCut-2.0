@@ -13,10 +13,13 @@ export interface SettingsState {
   provider: AIProvider;
   model: string;
   apiKeys: Record<AIProvider, string>;
+  /** Service key for Runway generation (separate from chat providers). */
+  runwayApiKey: string;
 
   setProvider: (provider: AIProvider) => void;
   setModel: (model: string) => void;
   setApiKey: (provider: AIProvider, key: string) => void;
+  setRunwayApiKey: (key: string) => void;
   getActiveApiKey: () => string;
 }
 
@@ -77,12 +80,22 @@ function saveProviderToStorage(provider: AIProvider) {
   }
 }
 
+function loadRunwayKeyFromStorage(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return localStorage.getItem('chatcut_runway_key') ?? '';
+  } catch {
+    return '';
+  }
+}
+
 export const useSettingsStore = create<SettingsState>((set, get) => {
   const initialProvider = loadProviderFromStorage();
   return {
     provider: initialProvider,
     model: DEFAULT_MODELS[initialProvider],
     apiKeys: loadKeysFromStorage(),
+    runwayApiKey: loadRunwayKeyFromStorage(),
 
     setProvider: (provider) => {
       saveProviderToStorage(provider);
@@ -97,6 +110,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => {
       const newKeys = { ...get().apiKeys, [provider]: key };
       saveKeysToStorage(newKeys);
       set({ apiKeys: newKeys });
+    },
+
+    setRunwayApiKey: (key) => {
+      try {
+        localStorage.setItem('chatcut_runway_key', key);
+      } catch {
+        // ignore quota errors
+      }
+      set({ runwayApiKey: key });
     },
 
     getActiveApiKey: () => {

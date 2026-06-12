@@ -15,6 +15,10 @@ export function ApiKeySetting() {
   const provider = useSettingsStore((s) => s.provider);
   const apiKeys = useSettingsStore((s) => s.apiKeys);
   const setApiKey = useSettingsStore((s) => s.setApiKey);
+  const runwayApiKey = useSettingsStore((s) => s.runwayApiKey);
+  const setRunwayApiKey = useSettingsStore((s) => s.setRunwayApiKey);
+  const [runwayDraft, setRunwayDraft] = useState(runwayApiKey);
+  const [runwaySaved, setRunwaySaved] = useState(false);
 
   const [draft, setDraft] = useState(apiKeys[provider]);
   const [saved, setSaved] = useState(false);
@@ -68,6 +72,38 @@ export function ApiKeySetting() {
       {currentKey && (
         <p className="text-[10px] text-neutral-500">
           Key configured ({currentKey.slice(0, 8)}...)
+        </p>
+      )}
+
+      {/* Runway — service key for generative clips, separate from chat providers */}
+      <label className="text-xs text-neutral-400 block pt-2">Runway API Key (generative clips)</label>
+      <div className="flex items-center gap-2">
+        <Input
+          type="password"
+          value={runwayDraft}
+          onChange={(e) => {
+            setRunwayDraft(e.target.value);
+            setRunwaySaved(false);
+          }}
+          placeholder="Enter Runway API key..."
+          className="flex-1 bg-neutral-800 border-neutral-700 text-neutral-200 placeholder:text-neutral-500 text-xs font-mono"
+        />
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => {
+            setRunwayApiKey(runwayDraft);
+            setRunwaySaved(true);
+            setTimeout(() => setRunwaySaved(false), 2000);
+          }}
+          className="bg-blue-600 hover:bg-blue-500 text-white text-xs"
+        >
+          {runwaySaved ? "Saved" : "Save"}
+        </Button>
+      </div>
+      {runwayApiKey && (
+        <p className="text-[10px] text-neutral-500">
+          Key configured ({runwayApiKey.slice(0, 8)}...)
         </p>
       )}
     </div>

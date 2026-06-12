@@ -39,7 +39,7 @@ export interface RecipeConnection {
  */
 export interface RecipeRevision {
   id: string;
-  op: 'compose' | 'append' | 'refine';
+  op: 'compose' | 'append' | 'refine' | 'tune';
   /** Node ids introduced by this revision. */
   addedNodeIds: string[];
   /** The user ask that motivated this pass (for the learned-template cache). */

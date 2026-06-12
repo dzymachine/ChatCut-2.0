@@ -341,6 +341,47 @@
       "type": "introspection",
       "description": "List available 3D LUT (.cube) files — shipped looks (teal_orange, warm_film, cool_noir, vaporwave_pink, bleach_bypass) plus any user-supplied LUTs. Returns name + absolute path. Apply at full strength with a node {filter:'lut3d', params:{file:'<path>'}}… BUT paths contain characters FFmpeg parses, so prefer a raw node: raw: \"lut3d='<path>'\". For partial strength (the pro 'intensity slider'), use the split+blend pattern as ONE raw node: raw: \"split[__a][__b];[__b]lut3d='<path>'[__g];[__a][__g]blend=all_expr='A*(1-0.6)+B*0.6'\" (0.6 = 60% intensity).",
       "parameters": {}
+    },
+    {
+      "name": "generate_video_clip",
+      "type": "mutation",
+      "description": "Generate an AI-restyled variant of a clip's footage via Runway video-to-video and ADD it to the timeline as a new clip (with a linked audio lane; generated audio is silent for now). Use for asks like \"AIfy this\", \"make this look like claymation/anime/cyberpunk\", \"generate a stylized version\". The source segment (capped at 10s) is extracted at proper resolution/bitrate, the prompt is automatically enriched with footage context (metadata + a frame caption), and the result is imported as a new asset — the ORIGINAL clip is never replaced. Generation takes 1–5 minutes; progress shows in the chat. Requires a Runway API key in Settings. Honest failure modes: missing key, segment too large, Runway rejection — report them to the user rather than retrying blindly.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "Source clip. If omitted, uses the currently selected clip."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "The style/transformation ask, e.g. \"clay stop-motion style, soft studio lighting\".",
+          "required": true
+        },
+        "duration_s": {
+          "type": "number",
+          "description": "Seconds of the clip to use, from its start (default: full trimmed length, capped at 10s)."
+        }
+      }
+    },
+    {
+      "name": "update_recipe_param",
+      "type": "mutation",
+      "description": "Overwrite parameter values on ONE existing recipe node in place (a tune, not an append) — used for precise dial adjustments (\"set the contrast node to 1.05\") and by the inline parameter sliders in the chat UI. The updated graph is FFmpeg dry-run validated before committing; recorded in the revision log as a 'tune'. For ADDING new effects use append_to_recipe; for full rewrites use refine_recipe.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "Target clip. If omitted, uses the currently selected clip."
+        },
+        "node_id": {
+          "type": "string",
+          "description": "The recipe node whose params to overwrite (see get_recipe).",
+          "required": true
+        },
+        "params": {
+          "type": "object",
+          "description": "Param name → new value map; merged over the node's existing params.",
+          "required": true
+        }
+      }
     }
   ]
 }

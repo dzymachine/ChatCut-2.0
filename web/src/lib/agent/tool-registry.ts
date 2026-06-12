@@ -15,6 +15,7 @@
 import { v4 as uuid } from 'uuid';
 import { TOOLS } from '../../../src-shared/tools';
 import { useEditorStore } from '@/lib/store/editor-store';
+import { useSettingsStore } from '@/lib/store/settings-store';
 import { getEffectDescriptor } from '@/lib/effects/registry';
 import { isTauri } from '@/lib/tauri/bridge';
 import { compileRecipe } from '@/lib/recipe/compiler';
@@ -705,6 +706,131 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
         hint: "Apply via a raw node: raw: \"lut3d='<path>'\". Partial strength: raw: \"split[__a][__b];[__b]lut3d='<path>'[__g];[__a][__g]blend=all_expr='A*(1-I)+B*I'\" with I = intensity 0..1.",
       },
     };
+  },
+
+  update_recipe_param: async (args) => {
+    const store = useEditorStore.getState();
+    const target = resolveRecipeClip(args);
+    if (!target.ok) return { success: false, error: target.error };
+    if (!target.recipe || target.recipe.nodes.length === 0) {
+      return { success: false, error: 'Clip has no recipe — nothing to tune. Use compose_recipe first.' };
+    }
+
+    const nodeId = args.node_id as string | undefined;
+    const params = args.params as Record<string, number | string | boolean> | undefined;
+    if (!nodeId || !params || typeof params !== 'object') {
+      return { success: false, error: 'Parameters "node_id" and "params" are required.' };
+    }
+    const node = target.recipe.nodes.find((n) => n.id === nodeId);
+    if (!node) {
+      return {
+        success: false,
+        error: `Node "${nodeId}" not found. Existing nodes: ${target.recipe.nodes.map((n) => n.id).join(', ')}.`,
+      };
+    }
+    if (node.raw) {
+      return { success: false, error: `Node "${nodeId}" is a raw filter string — tune structured nodes only (or refine_recipe).` };
+    }
+
+    const tuned: Recipe = {
+      ...target.recipe,
+      nodes: target.recipe.nodes.map((n) =>
+        n.id === nodeId ? { ...n, params: { ...n.params, ...params } } : n,
+      ),
+      revisions: [
+        ...(target.recipe.revisions ?? []),
+        {
+          id: `rev-${uuid()}`,
+          op: 'tune',
+          addedNodeIds: [],
+          prompt: `tune ${nodeId}: ${Object.keys(params).join(', ')}`,
+          ts: Date.now(),
+        },
+      ],
+    };
+
+    const result = await validateCompileDryRun(tuned);
+    if (!result.ok) return { success: false, error: result.error };
+
+    store.beginUndoBatch('Tune recipe param');
+    store.setClipRecipe(target.clipId, tuned);
+    store.commitUndoBatch();
+
+    return { success: true, data: { clipId: target.clipId, nodeId, filterString: result.filterString } };
+  },
+
+  generate_video_clip: async (args) => {
+    if (!isTauri()) {
+      return { success: false, error: 'Generation requires the desktop app.' };
+    }
+    const store = useEditorStore.getState();
+    const target = resolveRecipeClip(args);
+    if (!target.ok) return { success: false, error: target.error };
+
+    const prompt = args.prompt as string | undefined;
+    if (!prompt) return { success: false, error: 'Parameter "prompt" is required.' };
+
+    const clip = store.getClipById(target.clipId);
+    const asset = clip ? store.assets.get(clip.assetId) : undefined;
+    if (!clip || !asset?.nativePath) {
+      return { success: false, error: 'Source clip has no native file path (desktop import required).' };
+    }
+
+    const settings = useSettingsStore.getState();
+    if (!settings.runwayApiKey) {
+      return { success: false, error: 'No Runway API key configured. Ask the user to add one in Settings → Runway API Key.' };
+    }
+
+    const durationCap = Math.min((args.duration_s as number | undefined) ?? 10, 10);
+    const sourceEnd = Math.min(clip.sourceEnd, clip.sourceStart + durationCap);
+
+    const { startGeneration, getGenerationProgress } = await import('@/lib/tauri/bridge');
+    const { useGenerationStore } = await import('@/lib/store/generation-store');
+
+    const genId = await startGeneration({
+      sourcePath: asset.nativePath,
+      sourceStart: clip.sourceStart,
+      sourceEnd,
+      prompt,
+      runwayApiKey: settings.runwayApiKey,
+      anthropicApiKey: settings.apiKeys.anthropic || null,
+    });
+
+    // Poll until terminal; the chat progress chip mirrors this store. The
+    // chip's Cancel button calls cancel_generation — the pipeline notices and
+    // resolves this loop with a 'cancelled' stage.
+    try {
+      for (;;) {
+        const progress = await getGenerationProgress(genId);
+        useGenerationStore.getState().setActive(progress);
+        if (!progress.running) {
+          if (progress.stage === 'done' && progress.outputPath) {
+            const fileName = progress.outputPath.split(/[/\\]/).pop() || 'generated.mp4';
+            const newAsset = await store.addMediaFileFromPath(progress.outputPath, fileName);
+            // Adds a NEW video clip + linked (silent) audio lane — the
+            // original clip is never replaced.
+            const newClip = store.addClipFromMedia(newAsset);
+            return {
+              success: true,
+              data: {
+                generationId: genId,
+                addedClipId: newClip.id,
+                assetId: newAsset.id,
+                duration: newAsset.duration,
+                note: 'Generated clip added to the timeline after existing clips (with a silent linked audio lane).',
+              },
+            };
+          }
+          return {
+            success: false,
+            error: progress.error ?? `Generation ${progress.stage}.`,
+          };
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    } finally {
+      useGenerationStore.getState().setActive(null);
+    }
   },
 
   validate_recipe: async (args) => {

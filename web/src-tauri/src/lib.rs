@@ -2,6 +2,7 @@ mod commands;
 mod error;
 mod export;
 mod ffmpeg;
+mod generate;
 mod mcp;
 mod project;
 mod recipe;
@@ -52,6 +53,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(Mutex::new(export::ExportState::default()))
+        .manage(generate::GenerationState::default())
         .setup(|app| {
             use tauri::Manager;
 
@@ -87,6 +89,9 @@ pub fn run() {
             export::cancel_export,
             export::probe_media,
             export::render_recipe_preview,
+            generate::start_generation,
+            generate::get_generation_progress,
+            generate::cancel_generation,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ChatCut")
