@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
+import { useExportStatusStore } from "@/lib/store/export-status-store";
 import { findClipById } from "@/lib/timeline/find-clip";
 import {
   convertFileSrc,
@@ -76,6 +77,8 @@ export function usePreviewProxy(): {
 
     const handle = window.setTimeout(async () => {
       if (myToken !== renderTokenRef.current) return;
+      // An export takes priority — don't start a competing preview encode.
+      if (useExportStatusStore.getState().isExporting) return;
 
       // Read fresh state inside the debounced callback so we don't capture
       // stale closures across rapid edits.

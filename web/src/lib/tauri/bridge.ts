@@ -145,6 +145,12 @@ export async function cancelExport(): Promise<string> {
   return tauriInvoke<string>("cancel_export");
 }
 
+/** Kill any in-flight preview-proxy renders (called when an export begins). */
+export async function cancelPreviewRenders(): Promise<void> {
+  if (!isTauri()) return;
+  return tauriInvoke<void>("cancel_preview_renders");
+}
+
 /** Probe a media file for metadata using ffprobe */
 export async function probeMedia(path: string): Promise<MediaProbeResult> {
   return tauriInvoke<MediaProbeResult>("probe_media", { path });

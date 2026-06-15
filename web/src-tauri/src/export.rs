@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tauri::State;
 use tempfile::NamedTempFile;
 
@@ -123,11 +124,43 @@ pub struct MediaProbeResult {
     pub bit_rate: Option<u64>,
 }
 
-/// Manages the currently running FFmpeg export process
+/// Live, raw progress written by the background stdout-reader thread and read
+/// (non-blocking) by `get_export_progress`. The reader thread parses FFmpeg's
+/// `-progress` blocks; the command projects a smooth display value from these
+/// sparse samples (HW encodes emit only a handful of blocks for a short clip).
+#[derive(Default)]
+struct ProgressInner {
+    /// Media seconds encoded so far (from `out_time_us`).
+    out_time: f64,
+    /// Encode speed × realtime (parsed from `speed=N.NNx`).
+    speed: f64,
+    frame: u64,
+    /// Wall-clock of the last FFmpeg progress sample — anchors projection.
+    updated_at: Option<Instant>,
+    /// FFmpeg emitted `progress=end`.
+    finished: bool,
+}
+
+/// Manages the currently running FFmpeg export process.
+///
+/// Architecture: on export, two detached threads continuously drain the child's
+/// stdout (progress → `inner`) and stderr (→ `stderr_buf`). Draining both is
+/// what prevents the classic pipe-fill deadlock, and it makes
+/// `get_export_progress` a pure non-blocking read of shared state.
 pub struct ExportState {
     pub child: Option<Child>,
-    pub progress: ExportProgress,
-    pub total_duration: f64,
+    inner: Arc<Mutex<ProgressInner>>,
+    stderr_buf: Arc<Mutex<Vec<String>>>,
+    /// Reader-thread handles — joined on exit so the shared buffers are fully
+    /// drained before we read the final progress / error (avoids a truncated
+    /// error message when FFmpeg fails).
+    stdout_handle: Option<std::thread::JoinHandle<()>>,
+    stderr_handle: Option<std::thread::JoinHandle<()>>,
+    started: Option<Instant>,
+    total_duration: f64,
+    total_frames: u64,
+    running: bool,
+    error: Option<String>,
     filter_script: Option<NamedTempFile>,
 }
 
@@ -135,16 +168,15 @@ impl Default for ExportState {
     fn default() -> Self {
         Self {
             child: None,
-            progress: ExportProgress {
-                percent: 0.0,
-                frame: 0,
-                total_frames: 0,
-                speed: "0x".to_string(),
-                eta: 0.0,
-                running: false,
-                error: None,
-            },
+            inner: Arc::new(Mutex::new(ProgressInner::default())),
+            stderr_buf: Arc::new(Mutex::new(Vec::new())),
+            stdout_handle: None,
+            stderr_handle: None,
+            started: None,
             total_duration: 0.0,
+            total_frames: 0,
+            running: false,
+            error: None,
             filter_script: None,
         }
     }
@@ -531,6 +563,26 @@ fn build_filter_complex(clips: &[ExportClip], output_width: u32, output_height: 
     filter_parts.join(";")
 }
 
+/// Registry of in-flight preview-proxy renders, so they can be cancelled
+/// wholesale when a (higher-priority) export starts — freeing the CPU/encoder
+/// instead of letting a now-redundant preview encode race the export.
+#[derive(Default)]
+pub struct PreviewState {
+    cancels: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+}
+
+/// Cancel every in-flight preview render. Called by the frontend the moment an
+/// export begins; safe no-op when nothing is rendering.
+#[tauri::command]
+pub fn cancel_preview_renders(state: State<'_, PreviewState>) -> Result<(), String> {
+    if let Ok(map) = state.cancels.lock() {
+        for n in map.values() {
+            n.notify_waiters();
+        }
+    }
+    Ok(())
+}
+
 /// Build a standalone single-input filtergraph for ONE clip's preview proxy:
 /// legacy effects → recipe → downscale. Mirrors the per-clip video chain in
 /// `build_filter_complex` minus trim/pad/concat — input `-ss`/`-t` handle the
@@ -560,10 +612,12 @@ fn short_hash(s: &str) -> String {
 /// frame (png) — of ONE clip with its recipe baked in, so the canvas can show
 /// the grade without a full export. Returns the output file path (the frontend
 /// wraps it with convertFileSrc). Cached by content hash; a hit skips encoding.
-/// Runs off the UI thread via spawn_blocking.
+/// Cancellable: registered in `PreviewState` so `cancel_preview_renders`
+/// (fired when an export starts) can kill an in-flight encode.
 #[tauri::command]
 pub async fn render_recipe_preview(
     app: tauri::AppHandle,
+    preview_state: State<'_, PreviewState>,
     clip: ExportClip,
     clip_id: String,
     out_width: u32,
@@ -603,62 +657,84 @@ pub async fn render_recipe_preview(
         return Ok(out_path_str);
     }
 
-    let source_path = clip.source_path.clone();
     let source_start = clip.source_start;
     let duration = (clip.source_end - clip.source_start).max(0.0);
-    let task_out = out_path_str.clone();
 
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let mut cmd = Command::new("ffmpeg");
-        cmd.arg("-y");
-        match single_frame {
-            Some(t) => {
-                // Still: input-seek to the (proxy-local) playhead within the clip.
-                cmd.arg("-ss").arg(format!("{:.6}", source_start + t.max(0.0)));
-                cmd.arg("-i").arg(&source_path);
-                cmd.arg("-filter_complex").arg(&filter);
-                cmd.arg("-map").arg("[vout]");
-                cmd.arg("-frames:v").arg("1");
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.arg("-y");
+    match single_frame {
+        Some(t) => {
+            // Still: input-seek to the (proxy-local) playhead within the clip.
+            cmd.arg("-ss").arg(format!("{:.6}", source_start + t.max(0.0)));
+            cmd.arg("-i").arg(&clip.source_path);
+            cmd.arg("-filter_complex").arg(&filter);
+            cmd.arg("-map").arg("[vout]");
+            cmd.arg("-frames:v").arg("1");
+        }
+        None => {
+            // Proxy: input-seek to clip start, encode the trimmed segment.
+            cmd.arg("-ss").arg(format!("{:.6}", source_start));
+            cmd.arg("-i").arg(&clip.source_path);
+            cmd.arg("-t").arg(format!("{:.6}", duration));
+            cmd.arg("-filter_complex").arg(&filter);
+            cmd.arg("-map").arg("[vout]");
+            cmd.arg("-an"); // video-only (pool <video>s are muted)
+            for a in get_codec_args("h264", "low", out_w, out_h, fps) {
+                cmd.arg(a);
             }
-            None => {
-                // Proxy: input-seek to clip start, encode the trimmed segment.
-                cmd.arg("-ss").arg(format!("{:.6}", source_start));
-                cmd.arg("-i").arg(&source_path);
-                cmd.arg("-t").arg(format!("{:.6}", duration));
-                cmd.arg("-filter_complex").arg(&filter);
-                cmd.arg("-map").arg("[vout]");
-                cmd.arg("-an"); // video-only (pool <video>s are muted)
-                for a in get_codec_args("h264", "low", out_w, out_h, fps) {
-                    cmd.arg(a);
+            cmd.arg("-r").arg(format!("{}", fps));
+        }
+    }
+    cmd.arg(&out_path_str);
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start FFmpeg: {}. Is it installed?", e))?;
+
+    // Register a cancel signal so an incoming export can abort this encode.
+    let token = format!("{}-{}", clip_id, uuid::Uuid::new_v4());
+    let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    if let Ok(mut map) = preview_state.cancels.lock() {
+        map.insert(token.clone(), std::sync::Arc::clone(&notify));
+    }
+
+    let outcome = tokio::select! {
+        status = child.wait() => {
+            match status {
+                Ok(s) if s.success() => Ok(()),
+                Ok(_) => {
+                    let mut msg = "preview encode failed".to_string();
+                    if let Some(mut err) = child.stderr.take() {
+                        use tokio::io::AsyncReadExt;
+                        let mut buf = String::new();
+                        let _ = err.read_to_string(&mut buf).await;
+                        if let Some(line) = buf.lines().rev().find(|l| {
+                            let x = l.to_lowercase();
+                            x.contains("error") || x.contains("invalid") || x.contains("not found")
+                        }) {
+                            msg = line.to_string();
+                        }
+                        eprintln!("[preview] ffmpeg failed:\n{}", buf);
+                    }
+                    Err(msg)
                 }
-                cmd.arg("-r").arg(format!("{}", fps));
+                Err(e) => Err(format!("preview wait error: {}", e)),
             }
         }
-        cmd.arg(&task_out);
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::piped());
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to start FFmpeg: {}. Is it installed?", e))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let msg = stderr
-                .lines()
-                .rev()
-                .find(|l| {
-                    let x = l.to_lowercase();
-                    x.contains("error") || x.contains("invalid") || x.contains("not found")
-                })
-                .unwrap_or("preview encode failed")
-                .to_string();
-            eprintln!("[preview] ffmpeg failed:\n{}", stderr);
-            return Err(msg);
+        _ = notify.notified() => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = std::fs::remove_file(&out_path_str); // no partial proxy
+            Err("preview superseded by export".to_string())
         }
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("preview task join error: {}", e))??;
+    };
+
+    if let Ok(mut map) = preview_state.cancels.lock() {
+        map.remove(&token);
+    }
+    outcome?;
 
     eprintln!("[preview] rendered {}", out_path_str);
     Ok(out_path_str)
@@ -917,169 +993,218 @@ pub fn export_video(
     cmd.stderr(Stdio::piped());
 
     // Start the process
-    let child = cmd.spawn().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         format!(
             "Failed to start FFmpeg: {}. Make sure FFmpeg is installed.",
             e
         )
     })?;
 
+    // Fresh shared buffers for this run.
+    let inner = Arc::new(Mutex::new(ProgressInner::default()));
+    let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+
+    // Reader thread: drain stdout, parse FFmpeg `-progress` blocks into `inner`.
+    let mut stdout_handle: Option<std::thread::JoinHandle<()>> = None;
+    if let Some(stdout) = child.stdout.take() {
+        let inner = Arc::clone(&inner);
+        stdout_handle = Some(std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(v) = line.strip_prefix("out_time_us=") {
+                    if let Ok(us) = v.trim().parse::<f64>() {
+                        if let Ok(mut p) = inner.lock() {
+                            p.out_time = us / 1_000_000.0;
+                            p.updated_at = Some(Instant::now());
+                        }
+                    }
+                } else if let Some(v) = line.strip_prefix("speed=") {
+                    // e.g. "2.34x" — keep the last positive value.
+                    if let Ok(s) = v.trim().trim_end_matches('x').trim().parse::<f64>() {
+                        if s > 0.0 {
+                            if let Ok(mut p) = inner.lock() {
+                                p.speed = s;
+                            }
+                        }
+                    }
+                } else if let Some(v) = line.strip_prefix("frame=") {
+                    if let Ok(f) = v.trim().parse::<u64>() {
+                        if let Ok(mut p) = inner.lock() {
+                            p.frame = f;
+                        }
+                    }
+                } else if line.starts_with("progress=end") {
+                    if let Ok(mut p) = inner.lock() {
+                        p.finished = true;
+                        p.updated_at = Some(Instant::now());
+                    }
+                }
+            }
+        }));
+    }
+
+    // Reader thread: drain stderr so the pipe never fills (deadlock guard);
+    // collected for diagnostics + surfacing the cause on failure.
+    let mut stderr_handle: Option<std::thread::JoinHandle<()>> = None;
+    if let Some(stderr) = child.stderr.take() {
+        let stderr_buf = Arc::clone(&stderr_buf);
+        stderr_handle = Some(std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(mut buf) = stderr_buf.lock() {
+                    buf.push(line);
+                }
+            }
+        }));
+    }
+
     state.child = Some(child);
     state.filter_script = filter_script;
     state.total_duration = total_duration;
-    state.progress = ExportProgress {
-        percent: 0.0,
-        frame: 0,
-        total_frames,
-        speed: "0x".to_string(),
-        eta: 0.0,
-        running: true,
-        error: None,
-    };
+    state.total_frames = total_frames;
+    state.inner = inner;
+    state.stderr_buf = stderr_buf;
+    state.stdout_handle = stdout_handle;
+    state.stderr_handle = stderr_handle;
+    state.started = Some(Instant::now());
+    state.running = true;
+    state.error = None;
 
     Ok("Export started".to_string())
 }
 
-/// Get the current export progress
+/// Get the current export progress.
+///
+/// Non-blocking: reads the shared `ProgressInner` the reader thread maintains,
+/// then PROJECTS a smooth display value. FFmpeg emits only a few `-progress`
+/// samples for a short HW encode, so between samples we advance the bar using
+/// `last_out_time + elapsed_since_sample * speed` (clamped, never regressing,
+/// capped < 100 until truly done). ETA derives from the same projection.
 #[tauri::command]
 pub fn get_export_progress(
     export_state: State<'_, Mutex<ExportState>>,
 ) -> Result<ExportProgress, String> {
     let mut state = export_state.lock().map_err(|e| e.to_string())?;
 
-    // If no export in progress, return idle progress
-    if state.child.is_none() {
+    let idle = ExportProgress {
+        percent: 0.0,
+        frame: 0,
+        total_frames: 0,
+        speed: "0x".to_string(),
+        eta: 0.0,
+        running: false,
+        error: None,
+    };
+
+    if !state.running && state.child.is_none() {
+        // Carry a terminal error/percent if the last run ended; else idle.
+        if let Some(err) = state.error.clone() {
+            return Ok(ExportProgress { error: Some(err), ..idle });
+        }
+        return Ok(idle);
+    }
+
+    // Detect process exit (reader threads finish independently).
+    if let Some(child) = state.child.as_mut() {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                state.running = false;
+                state.child = None;
+                state.filter_script = None;
+                // Join the reader threads so their buffers are fully drained
+                // before we read the final progress / error — the process has
+                // exited (pipes are EOF), so this returns near-instantly.
+                if let Some(h) = state.stdout_handle.take() {
+                    let _ = h.join();
+                }
+                if let Some(h) = state.stderr_handle.take() {
+                    let _ = h.join();
+                }
+                if !status.success() {
+                    let lines = state.stderr_buf.lock().map(|b| b.clone()).unwrap_or_default();
+                    eprintln!(
+                        "[export] FFmpeg FAILED (exit {}) — full stderr ({} lines):",
+                        status, lines.len()
+                    );
+                    for l in &lines {
+                        eprintln!("[export]   | {}", l);
+                    }
+                    let informative = lines.iter().find(|l| {
+                        let lower = l.to_lowercase();
+                        lower.contains("error") || lower.contains("invalid")
+                            || lower.contains("not found") || lower.contains("no such")
+                    });
+                    state.error = Some(
+                        informative
+                            .or_else(|| lines.last())
+                            .cloned()
+                            .unwrap_or_else(|| format!("FFmpeg exited with code {}", status)),
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                state.running = false;
+                state.child = None;
+                state.error = Some(format!("Error checking process: {}", e));
+            }
+        }
+    }
+
+    let total = state.total_duration.max(0.0001);
+    let snap = state.inner.lock().map(|p| (p.out_time, p.speed, p.frame, p.updated_at, p.finished))
+        .unwrap_or((0.0, 0.0, 0, None, false));
+    let (out_time, speed, frame, updated_at, finished) = snap;
+
+    // Terminal states.
+    if state.error.is_some() {
         return Ok(ExportProgress {
             percent: 0.0,
-            frame: 0,
-            total_frames: 0,
+            frame,
+            total_frames: state.total_frames,
             speed: "0x".to_string(),
+            eta: 0.0,
+            running: false,
+            error: state.error.clone(),
+        });
+    }
+    if finished || !state.running {
+        return Ok(ExportProgress {
+            percent: 100.0,
+            frame,
+            total_frames: state.total_frames,
+            speed: format!("{:.2}x", speed.max(0.0)),
             eta: 0.0,
             running: false,
             error: None,
         });
     }
 
-    // Collect progress data from the child process into local variables
-    // to avoid multiple mutable borrows
-    let mut new_percent: Option<f64> = None;
-    let mut new_speed: Option<String> = None;
-    let mut new_frame: Option<u64> = None;
-    let mut is_finished = false;
-    let mut error_msg: Option<String> = None;
-    let total_duration = state.total_duration;
+    // Project media-time forward from the last sample using the encode speed,
+    // so the bar glides between FFmpeg's sparse updates instead of freezing.
+    let assumed_speed = if speed > 0.0 { speed } else { 1.0 };
+    let since_sample = updated_at.map(|t| t.elapsed().as_secs_f64()).unwrap_or_else(|| {
+        state.started.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0)
+    });
+    // Cap at the real duration so a stall (no FFmpeg samples for a while) can't
+    // project past 100% and snap the bar / zero the ETA prematurely.
+    let projected_out = (out_time + since_sample * assumed_speed).min(total);
+    // Reported floor (never regress) and a 99% ceiling until truly finished.
+    let reported_pct = (out_time / total * 100.0).clamp(0.0, 99.0);
+    let percent = (projected_out / total * 100.0).clamp(reported_pct, 99.0);
 
-    // Phase 1: Read from child process stdout
-    if let Some(ref mut child) = state.child {
-        // Read progress from stdout (FFmpeg -progress pipe:1)
-        if let Some(ref mut stdout) = child.stdout {
-            let reader = BufReader::new(stdout);
-            let mut current_time: Option<f64> = None;
-            let mut current_speed: Option<String> = None;
-            let mut current_frame: Option<u64> = None;
+    let remaining_media = (total - projected_out).max(0.0);
+    let eta = if assumed_speed > 0.0 { remaining_media / assumed_speed } else { 0.0 };
 
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        if let Some(time_str) = line.strip_prefix("out_time_us=") {
-                            if let Ok(time_us) = time_str.trim().parse::<f64>() {
-                                current_time = Some(time_us / 1_000_000.0);
-                            }
-                        } else if let Some(speed_str) = line.strip_prefix("speed=") {
-                            current_speed = Some(speed_str.trim().to_string());
-                        } else if let Some(frame_str) = line.strip_prefix("frame=") {
-                            if let Ok(frame) = frame_str.trim().parse::<u64>() {
-                                current_frame = Some(frame);
-                            }
-                        } else if line.starts_with("progress=end") {
-                            is_finished = true;
-                            new_percent = Some(100.0);
-                            break;
-                        } else if line.starts_with("progress=continue") {
-                            if let Some(time) = current_time {
-                                if total_duration > 0.0 {
-                                    new_percent = Some((time / total_duration * 100.0).min(99.9));
-                                }
-                            }
-                            new_speed = current_speed.clone();
-                            new_frame = current_frame;
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-
-        // Check if process has exited
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                is_finished = true;
-                if !status.success() {
-                    if let Some(ref mut stderr) = child.stderr {
-                        let reader = BufReader::new(stderr);
-                        let error_lines: Vec<String> = reader
-                            .lines()
-                            .filter_map(|l| l.ok())
-                            .collect();
-                        // Dump full FFmpeg stderr to the dev terminal so we
-                        // can diagnose. Without this, only the last line is
-                        // surfaced to the UI which loses the actual cause.
-                        eprintln!(
-                            "[export] FFmpeg FAILED (exit {}) — full stderr ({} lines):",
-                            status,
-                            error_lines.len()
-                        );
-                        for line in &error_lines {
-                            eprintln!("[export]   | {}", line);
-                        }
-                        // Find the most-informative error line: prefer the
-                        // first one containing "Error" / "Invalid" / "not
-                        // found" rather than the last (often a generic
-                        // "Conversion failed").
-                        let informative = error_lines.iter().find(|l| {
-                            let lower = l.to_lowercase();
-                            lower.contains("error") || lower.contains("invalid")
-                                || lower.contains("not found") || lower.contains("no such")
-                        });
-                        error_msg = Some(
-                            informative
-                                .or_else(|| error_lines.last())
-                                .cloned()
-                                .unwrap_or_else(|| format!("FFmpeg exited with code {}", status)),
-                        );
-                    }
-                } else {
-                    new_percent = Some(100.0);
-                }
-            }
-            Ok(None) => {} // Still running
-            Err(e) => {
-                is_finished = true;
-                error_msg = Some(format!("Error checking process: {}", e));
-            }
-        }
-    }
-
-    // Phase 2: Apply collected data to state (no borrow conflicts)
-    if let Some(percent) = new_percent {
-        state.progress.percent = percent;
-    }
-    if let Some(speed) = new_speed {
-        state.progress.speed = speed;
-    }
-    if let Some(frame) = new_frame {
-        state.progress.frame = frame;
-    }
-    if is_finished {
-        state.progress.running = false;
-        state.filter_script = None;
-    }
-    if let Some(err) = error_msg {
-        state.progress.error = Some(err);
-    }
-
-    Ok(state.progress.clone())
+    Ok(ExportProgress {
+        percent,
+        frame,
+        total_frames: state.total_frames,
+        speed: if speed > 0.0 { format!("{:.2}x", speed) } else { "—".to_string() },
+        eta,
+        running: true,
+        error: None,
+    })
 }
 
 /// Cancel the current export
@@ -1091,8 +1216,8 @@ pub fn cancel_export(
 
     if let Some(ref mut child) = state.child {
         child.kill().map_err(|e| format!("Failed to cancel export: {}", e))?;
-        state.progress.running = false;
-        state.progress.error = Some("Export cancelled by user".to_string());
+        state.running = false;
+        state.error = Some("Export cancelled by user".to_string());
         state.child = None;
         state.filter_script = None;
         Ok("Export cancelled".to_string())

@@ -54,6 +54,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(Mutex::new(export::ExportState::default()))
         .manage(generate::GenerationState::default())
+        .manage(export::PreviewState::default())
         .setup(|app| {
             use tauri::Manager;
 
@@ -89,6 +90,7 @@ pub fn run() {
             export::cancel_export,
             export::probe_media,
             export::render_recipe_preview,
+            export::cancel_preview_renders,
             generate::start_generation,
             generate::get_generation_progress,
             generate::cancel_generation,
