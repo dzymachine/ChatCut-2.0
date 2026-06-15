@@ -145,9 +145,72 @@ export async function cancelExport(): Promise<string> {
   return tauriInvoke<string>("cancel_export");
 }
 
+/** Kill any in-flight preview-proxy renders (called when an export begins). */
+export async function cancelPreviewRenders(): Promise<void> {
+  if (!isTauri()) return;
+  return tauriInvoke<void>("cancel_preview_renders");
+}
+
 /** Probe a media file for metadata using ffprobe */
 export async function probeMedia(path: string): Promise<MediaProbeResult> {
   return tauriInvoke<MediaProbeResult>("probe_media", { path });
+}
+
+/**
+ * Render a low-res, recipe-baked preview proxy (mp4) — or a single still frame
+ * (png) when `singleFrame` is a timestamp (proxy-local seconds, 0-based within
+ * the clip's trimmed segment). Returns the native output file path; wrap with
+ * `convertFileSrc()` before assigning to a `<video>`/`<img>` src. Cached by
+ * content hash on the backend; a re-applied recipe is an instant hit.
+ */
+export async function renderRecipePreview(args: {
+  clip: ExportClip;
+  clipId: string;
+  outWidth: number;
+  outHeight: number;
+  fps: number;
+  singleFrame?: number | null;
+}): Promise<string> {
+  return tauriInvoke<string>("render_recipe_preview", {
+    clip: args.clip,
+    clipId: args.clipId,
+    outWidth: args.outWidth,
+    outHeight: args.outHeight,
+    fps: args.fps,
+    singleFrame: args.singleFrame ?? null,
+  });
+}
+
+// ─── Generation Commands ─────────────────────────────────────────────
+
+export interface GenerationProgress {
+  id: string;
+  stage: 'extracting' | 'enriching' | 'uploading' | 'generating' | 'downloading' | 'done' | 'failed' | 'cancelled';
+  percent: number;
+  message: string;
+  outputPath: string | null;
+  error: string | null;
+  running: boolean;
+}
+
+/** Start a Runway video-to-video generation; returns the generation id. */
+export async function startGeneration(request: {
+  sourcePath: string;
+  sourceStart: number;
+  sourceEnd: number;
+  prompt: string;
+  runwayApiKey: string;
+  anthropicApiKey?: string | null;
+}): Promise<string> {
+  return tauriInvoke<string>('start_generation', { request });
+}
+
+export async function getGenerationProgress(id: string): Promise<GenerationProgress> {
+  return tauriInvoke<GenerationProgress>('get_generation_progress', { id });
+}
+
+export async function cancelGeneration(id: string): Promise<void> {
+  return tauriInvoke<void>('cancel_generation', { id });
 }
 
 // ─── Dialog Commands (via Tauri plugin) ──────────────────────────────

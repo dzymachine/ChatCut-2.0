@@ -19,6 +19,8 @@ export interface RecipeNode {
   filter?: string;
   params?: Record<string, RecipeParamValue>;
   raw?: string;
+  /** Which revision added this node (append-only provenance). */
+  revisionId?: string;
 }
 
 /** Directed edge in the filter graph. */
@@ -27,9 +29,31 @@ export interface RecipeConnection {
   to: string;   // node id or "output"
 }
 
-/** A complete filter-graph recipe attached to a clip. */
-export interface Recipe {
+/**
+ * One entry in a recipe's append-only history.
+ *
+ * The LLM grows a recipe through `compose` (seed) → `append` (add nodes,
+ * never mutate existing ones) → `refine` (explicit user-requested rewrite/
+ * compaction). Each pass records which nodes it added, so the graph is
+ * self-describing: get_recipe shows the model exactly how the look was built.
+ */
+export interface RecipeRevision {
   id: string;
+  op: 'compose' | 'append' | 'refine' | 'tune';
+  /** Node ids introduced by this revision. */
+  addedNodeIds: string[];
+  /** The user ask that motivated this pass (for the learned-template cache). */
+  prompt?: string;
+  ts: number;
+}
+
+/** A complete filter-graph recipe attached to a clip.
+ *  `id` is optional because LLM-emitted recipes typically omit it; the
+ *  compose_recipe handler assigns one before storing. */
+export interface Recipe {
+  id?: string;
   nodes: RecipeNode[];
   connections: RecipeConnection[];
+  /** Append-only revision log. Absent on recipes from older projects. */
+  revisions?: RecipeRevision[];
 }

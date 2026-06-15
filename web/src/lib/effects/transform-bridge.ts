@@ -12,7 +12,7 @@
  * bridge becomes unnecessary.
  */
 
-import type { Transform, FilterState } from '@/types/editor';
+import type { Transform } from '@/types/editor';
 import type { AppliedEffect } from '@/types/effects';
 import { DEFAULT_TRANSFORM } from '@/types/editor';
 

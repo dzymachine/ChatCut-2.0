@@ -55,7 +55,7 @@ export interface Composition {
 
 // ─── Tracks & Clips ─────────────────────────────────────────────────────────
 
-export type TrackType = 'video' | 'audio' | 'text' | 'effect';
+export type TrackType = 'video' | 'audio';
 
 export interface Track {
   id: string;
@@ -72,10 +72,11 @@ export interface Track {
 
 export interface Clip {
   id: string;
-  type: ClipType;
 
-  // Source reference — the original media file
-  sourceFileId: string; // references a loaded MediaFile
+  // Source reference — the imported Asset this clip plays a window of.
+  // What the clip renders as is derived: the containing track's type decides
+  // the lane (video/audio), the asset's kind decides the media.
+  assetId: string;
 
   // What portion of the source to use
   sourceStart: number; // seconds into the original file
@@ -103,34 +104,22 @@ export interface Clip {
   // in the export pipeline.
   recipe?: import('../../src-shared/recipe').Recipe;
 
+  // Live-preview proxy (Phase B): asset-protocol URL of a low-res, recipe-baked
+  // proxy the backend rendered, so the canvas shows the grade without exporting.
+  // Ephemeral/in-memory only — NOT serialized to the project file, NOT undoable.
+  // Undefined = use the original source.
+  previewProxyUrl?: string;
+
   // Future: per-clip transitions, keyframes
   transitions: Transition[];
 }
 
-export type ClipType = 'video' | 'audio' | 'image' | 'text';
+// ─── Media Assets ───────────────────────────────────────────────────────────
+// The Asset model lives in types/media.ts. MediaFile remains as a compat
+// alias while call-sites migrate.
 
-// ─── Media Files ────────────────────────────────────────────────────────────
-
-/** A loaded media file. Stored separately from clips so multiple clips can
- *  reference the same source. */
-export interface MediaFile {
-  id: string;
-  name: string;
-  type: 'video' | 'audio' | 'image';
-  /** URL safe for use in <video>/<audio> elements.
-   *  In browser mode: blob URL from URL.createObjectURL().
-   *  In Tauri mode: asset protocol URL from convertFileSrc(). */
-  previewUrl: string;
-  /** Absolute native file path on disk (Tauri desktop only).
-   *  Used for FFmpeg export and project serialization.
-   *  Null in browser mode where we only have blob URLs. */
-  nativePath: string | null;
-  /** Original File reference (not serializable — ephemeral). */
-  file?: File;
-  duration: number; // seconds
-  width?: number;
-  height?: number;
-}
+export type { Asset, AssetKind, AssetStatus } from './media';
+export type MediaFile = import('./media').Asset;
 
 // ─── Transforms ─────────────────────────────────────────────────────────────
 
@@ -364,7 +353,7 @@ export const DEFAULT_UI_STATE: UIState = {
 // ─── Timeline State ─────────────────────────────────────────────────────────
 
 /** Tool modes for timeline interaction. */
-export type TimelineTool = 'select' | 'razor' | 'slip';
+export type TimelineTool = 'select' | 'razor';
 
 /** Persistent timeline panel state stored in the editor store. */
 export interface TimelineState {

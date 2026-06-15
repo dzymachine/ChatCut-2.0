@@ -5,7 +5,7 @@
  * in topological order and emits standard FFmpeg filter syntax.
  */
 
-import type { Recipe, RecipeNode } from '../../../src-shared/recipe';
+import type { Recipe } from '../../../src-shared/recipe';
 
 /**
  * Compile a Recipe AST into an FFmpeg filter chain string.

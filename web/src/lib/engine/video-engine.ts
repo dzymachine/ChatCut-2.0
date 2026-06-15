@@ -276,7 +276,7 @@ export class VideoEngine {
       let fileId = sourceFileId;
       if (!fileId) {
         const state = this.getState();
-        for (const [id, mf] of state.mediaFiles) {
+        for (const [id, mf] of state.assets) {
           if (mf.previewUrl === blobUrl) {
             fileId = id;
             break;
@@ -368,9 +368,26 @@ export class VideoEngine {
 
   /**
    * Maps timeline playhead time to source media time for a given clip.
-   * Formula: sourceTime = clip.sourceStart + (timelineTime - clip.timelineStart)
+   *
+   * Normal (no preview proxy):
+   *   sourceTime = clip.sourceStart + (timelineTime - clip.timelineStart)
+   *
+   * With a live-preview proxy (Phase B): the proxy is a TRIMMED segment
+   * (sourceStart..sourceEnd) re-encoded with the recipe baked in, so its
+   * local timeline is 0-based. Map identity-from-the-clip's-timelineStart —
+   * i.e. drop the `+ sourceStart` offset the unproxied path adds — and clamp
+   * to the proxy's duration. Centralizing this here makes all callers correct
+   * with no per-site change.
+   *
+   * Note: identity holds only while the recipe preserves timestamps; future
+   * speed-ramp recipes (`setpts`/`atempo`) will need a re-think here.
    */
   private mapTimelineToSourceTime(clip: Clip, timelineTime: number): number {
+    if (clip.previewProxyUrl) {
+      const proxyDuration = Math.max(0, clip.sourceEnd - clip.sourceStart);
+      const t = timelineTime - clip.timelineStart;
+      return Math.max(0, Math.min(t, proxyDuration));
+    }
     return clip.sourceStart + (timelineTime - clip.timelineStart);
   }
 
@@ -396,10 +413,22 @@ export class VideoEngine {
       for (const clip of track.clips) {
         const clipEnd = clip.timelineStart + (clip.sourceEnd - clip.sourceStart);
         if (timelineTime >= clip.timelineStart && timelineTime < clipEnd) {
-          const mediaFile = state.mediaFiles.get(clip.sourceFileId);
+          const mediaFile = state.assets.get(clip.assetId);
           let videoEl: HTMLVideoElement | null = null;
-          if (mediaFile) {
-            videoEl = this.videoPool.getOrCreate(clip.sourceFileId, mediaFile.previewUrl);
+          const proxyKey = `proxy:${clip.id}`;
+          if (clip.previewProxyUrl) {
+            // Recipe-baked proxy: use an isolated pool entry keyed by clipId so
+            // it never clobbers the (shared) sourceFileId element.
+            videoEl = this.videoPool.getOrCreate(proxyKey, clip.previewProxyUrl);
+          } else {
+            // No (or cleared) proxy → release any stale proxy element for this
+            // clip so we don't leak <video> nodes across recipe edits.
+            if (this.videoPool.has(proxyKey)) {
+              this.videoPool.releaseSource(proxyKey);
+            }
+            if (mediaFile) {
+              videoEl = this.videoPool.getOrCreate(clip.assetId, mediaFile.previewUrl);
+            }
           }
           result.push({ clip, track, videoElement: videoEl });
           // Allow multiple clips per track - if they overlap, the last one wins
@@ -419,9 +448,9 @@ export class VideoEngine {
     for (const track of state.project.tracks) {
       if (track.type !== 'video') continue;
       for (const clip of track.clips) {
-        const mediaFile = state.mediaFiles.get(clip.sourceFileId);
-        if (mediaFile && !this.videoPool.has(clip.sourceFileId)) {
-          const el = this.videoPool.getOrCreate(clip.sourceFileId, mediaFile.previewUrl);
+        const mediaFile = state.assets.get(clip.assetId);
+        if (mediaFile && !this.videoPool.has(clip.assetId)) {
+          const el = this.videoPool.getOrCreate(clip.assetId, mediaFile.previewUrl);
           if (!this.videoElement) {
             this.videoElement = el;
           }

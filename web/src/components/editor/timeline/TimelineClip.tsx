@@ -88,7 +88,7 @@ export const TimelineClip = memo(function TimelineClip({
   const trimClipEnd = useEditorStore((s) => s.trimClipEnd);
   const unlinkClip = useEditorStore((s) => s.unlinkClip);
   const removeClip = useEditorStore((s) => s.removeClip);
-  const mediaFiles = useEditorStore((s) => s.mediaFiles);
+  const assets = useEditorStore((s) => s.assets);
   const selectedClipIds = useEditorStore(useShallow((s) => s.ui.selectedClipIds));
 
   const clipRef = useRef<HTMLDivElement>(null);
@@ -109,15 +109,18 @@ export const TimelineClip = memo(function TimelineClip({
   const leftPx = clip.timelineStart * pixelsPerSecond;
   const widthPx = clipDuration * pixelsPerSecond;
 
-  const mediaFile = mediaFiles.get(clip.sourceFileId);
-  const clipName = mediaFile?.name ?? "Clip";
+  const asset = assets.get(clip.assetId);
+  const clipName = asset?.name ?? "Clip";
 
-  const colors = CLIP_COLORS[clip.type] ?? CLIP_COLORS.video;
+  // Render kind derives from the lane (audio track → audio clip) and the
+  // asset's media kind (image stills on video tracks keep their own color).
+  const renderKind = track.type === "audio" ? "audio" : asset?.kind ?? "video";
+  const colors = CLIP_COLORS[renderKind] ?? CLIP_COLORS.video;
 
   const isLinked = !!clip.linkId;
 
   const snapTime = useCallback(
-    (time: number, _excludeClipId?: string): number => {
+    (time: number): number => {
       if (!snapEnabled) return time;
 
       const thresholdSec = snapThresholdPx / pixelsPerSecond;
@@ -260,9 +263,9 @@ export const TimelineClip = memo(function TimelineClip({
             let newStart = dragState.current.initialTimelineStart + dtSeconds;
             newStart = Math.max(0, newStart);
 
-            const snappedStart = snapTime(newStart, clip.id);
+            const snappedStart = snapTime(newStart);
             const rightEdge = newStart + clipDuration;
-            const snappedRight = snapTime(rightEdge, clip.id);
+            const snappedRight = snapTime(rightEdge);
             if (Math.abs(snappedRight - rightEdge) < Math.abs(snappedStart - newStart)) {
               newStart = snappedRight - clipDuration;
             } else {
@@ -290,7 +293,7 @@ export const TimelineClip = memo(function TimelineClip({
             const newSourceStart = dragState.current.initialSourceStart + dtSeconds;
             const newTimelineStart = dragState.current.initialTimelineStart + dtSeconds;
 
-            const snappedTlStart = snapTime(Math.max(0, newTimelineStart), clip.id);
+            const snappedTlStart = snapTime(Math.max(0, newTimelineStart));
             const snapDelta = snappedTlStart - newTimelineStart;
             trimClipStart(
               clip.id,
@@ -302,7 +305,7 @@ export const TimelineClip = memo(function TimelineClip({
           case "trim-end": {
             const newSourceEnd = dragState.current.initialSourceEnd + dtSeconds;
             const rightEdge = clip.timelineStart + (newSourceEnd - clip.sourceStart);
-            const snappedRight = snapTime(rightEdge, clip.id);
+            const snappedRight = snapTime(rightEdge);
             const snapDelta = snappedRight - rightEdge;
             trimClipEnd(clip.id, newSourceEnd + snapDelta);
             break;
@@ -347,6 +350,10 @@ export const TimelineClip = memo(function TimelineClip({
       trimClipEnd,
       setSelectedClip,
       toggleClipSelection,
+      allTrackIds,
+      track.id,
+      track.type,
+      trackIndex,
     ]
   );
 
@@ -416,11 +423,11 @@ export const TimelineClip = memo(function TimelineClip({
           )}
 
           <div className="shrink-0 mr-1.5 opacity-70">
-            {clip.type === "video" ? (
+            {renderKind === "video" ? (
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className={colors.text}>
                 <path d="M15 8v8H5V8h10m1-2H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4V7a1 1 0 00-1-1z" />
               </svg>
-            ) : clip.type === "audio" ? (
+            ) : renderKind === "audio" ? (
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className={colors.text}>
                 <path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" />
               </svg>
@@ -433,6 +440,8 @@ export const TimelineClip = memo(function TimelineClip({
 
           <div className="flex-1 min-w-0">
             <p className={`text-[10px] font-medium truncate ${colors.text}`}>
+              {/* Minimal offline badge — full treatment is a Claude Design pass */}
+              {asset?.status === "missing" || asset?.status === "error" ? "⚠ " : ""}
               {clipName}
             </p>
             {widthPx > 80 && (

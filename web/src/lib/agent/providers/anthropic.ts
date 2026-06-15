@@ -7,23 +7,11 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { ToolDef } from '../../../../src-shared/tools';
-import type { LLMProvider, Message, ContentBlock, StreamDelta } from './index';
+import type { LLMProvider, Message, StreamDelta } from './index';
+import { handleStreamError } from './provider-error';
+import { SYSTEM_PROMPT } from './system-prompt';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
-
-const SYSTEM_PROMPT = `You are ChatCut, an AI video editor. You edit video by calling tools. Always use the available tools to fulfill the user's request. Check the timeline state first with get_timeline_state if you need context about what's on the timeline.
-
-When using apply_effect, the parameters object must use the effect's specific parameter ID as the key:
-- brightness: { brightness: <number> } where 0 is normal, positive is brighter, negative is darker (range -1 to 1, but you can exceed for dramatic effects)
-- contrast: { contrast: <number> } where 1.0 is normal (range 0 to 3)
-- saturation: { saturation: <number> } where 1.0 is normal (range 0 to 3)
-- gaussian_blur: { sigma: <number> } (range 0 to 100)
-- opacity: { opacity: <number> } (range 0 to 1)
-- scale: { scale: <number> } where 1.0 is 100% (range 0.1 to 10)
-- rotation: { degrees: <number> } (range -360 to 360)
-- exposure: { exposure: <number> } (range -3 to 3)
-
-You can omit clip_id — it defaults to the active/first clip.`;
 
 /** Convert our internal tool format to Anthropic's tool schema. */
 function convertTools(tools: ToolDef[]): Anthropic.Tool[] {
@@ -53,12 +41,9 @@ function convertTools(tools: ToolDef[]): Anthropic.Tool[] {
         properties,
         required: required.length > 0 ? required : undefined,
       },
+      // Cache breakpoint on the LAST tool covers system + all tools.
+      ...(index === tools.length - 1 ? { cache_control: { type: 'ephemeral' as const } } : {}),
     };
-
-    // Add cache breakpoint on the LAST tool to cover system + all tools
-    if (index === tools.length - 1) {
-      (toolDef as any).cache_control = { type: 'ephemeral' };
-    }
 
     return toolDef;
   });
@@ -165,20 +150,36 @@ export class AnthropicProvider implements LLMProvider {
         } else if (event.type === 'content_block_stop') {
           // If we were accumulating a tool_use block, emit it now
           if (currentToolName) {
-            let parsedArgs: Record<string, unknown> = {};
-            try {
-              if (currentToolInput) {
+            // Tools with no parameters stream no input → empty args is valid.
+            // But if input WAS streamed and fails to parse, the model emitted
+            // malformed JSON: surface the error and SKIP dispatch rather than
+            // silently running the tool with {} (which yields confusing edits).
+            let parsedArgs: Record<string, unknown> | null = {};
+            if (currentToolInput) {
+              try {
                 parsedArgs = JSON.parse(currentToolInput);
+              } catch (err) {
+                parsedArgs = null;
+                console.error(
+                  `[anthropic] Malformed tool arguments for "${currentToolName}" — skipping. Raw input:`,
+                  currentToolInput,
+                  err
+                );
+                onDelta({
+                  type: 'error',
+                  content: `The model produced invalid arguments for "${currentToolName}", so it was skipped. Try rephrasing your request.`,
+                });
               }
-            } catch {
-              // If JSON is malformed, pass empty args
             }
-            onDelta({
-              type: 'tool_use_start',
-              toolName: currentToolName,
-              toolArgs: parsedArgs,
-            });
-            onDelta({ type: 'tool_use_end', toolName: currentToolName });
+
+            if (parsedArgs !== null) {
+              onDelta({
+                type: 'tool_use_start',
+                toolName: currentToolName,
+                toolArgs: parsedArgs,
+              });
+              onDelta({ type: 'tool_use_end', toolName: currentToolName });
+            }
             currentToolName = '';
             currentToolInput = '';
           }
@@ -186,15 +187,8 @@ export class AnthropicProvider implements LLMProvider {
       }
 
       onDelta({ type: 'done' });
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || signal?.aborted) {
-        onDelta({ type: 'done' });
-        return;
-      }
-      onDelta({
-        type: 'error',
-        content: error?.message || 'Anthropic API error',
-      });
+    } catch (error: unknown) {
+      handleStreamError(error, 'Anthropic', onDelta, signal);
     }
   }
 }

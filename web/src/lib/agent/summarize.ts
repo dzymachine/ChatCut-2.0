@@ -8,7 +8,13 @@ export async function summarizeEditNode(
   toolName: string,
   args: Record<string, unknown>
 ): Promise<void> {
-  const anthropicKey = useSettingsStore.getState().apiKeys.anthropic;
+  const settings = useSettingsStore.getState();
+  // Edit-node summaries hardcode the Anthropic SDK + Haiku model + Anthropic
+  // key. Only run when Anthropic is the active provider — otherwise we'd fire
+  // hidden cross-provider calls for Groq/Gemini users who happen to have an
+  // Anthropic key configured.
+  if (settings.provider !== 'anthropic') return;
+  const anthropicKey = settings.apiKeys.anthropic;
   if (!anthropicKey) return;
 
   const argsDigest = JSON.stringify(args, null, 2).slice(0, 500);
@@ -37,7 +43,9 @@ export async function summarizeEditNode(
     if (text) {
       useEditorStore.getState().updateEditNodeSummary(nodeId, text);
     }
-  } catch {
-    // Degrade silently — the tool name is shown instead
+  } catch (err) {
+    // Degrade gracefully in the UI (the tool name is shown instead), but log
+    // so a broken key/model/network failure isn't completely invisible.
+    console.warn('[summarize] edit-node summary failed:', err);
   }
 }

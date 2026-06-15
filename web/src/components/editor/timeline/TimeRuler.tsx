@@ -25,11 +25,7 @@ export function TimeRuler({
   const isScrubbing = useRef(false);
 
   const { majorInterval, minorInterval } = useMemo(() => {
-    // Choose intervals so major ticks are ~80-150px apart
-    const targetMajorPx = 100;
-    const rawInterval = targetMajorPx / pixelsPerSecond;
-
-    // Snap to nice intervals
+    // Smallest "nice" interval that keeps major ticks at least 60px apart.
     const niceIntervals = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
     let major = niceIntervals[0];
     for (const interval of niceIntervals) {

@@ -154,8 +154,7 @@ export function EditHistoryPanel({ onPopOut, isFloating }: EditHistoryPanelProps
       {view === 'list' && (
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
-            {reversedHistory.map((node, index) => {
-              const isLatest = index === 0 && !node.disabled;
+            {reversedHistory.map((node) => {
               const detail = formatArgs(node.toolName, node.args);
               const isEffectNode =
                 EFFECT_TOOLS.has(node.toolName) && !!node.appliedEffectId;

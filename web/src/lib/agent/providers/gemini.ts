@@ -5,51 +5,62 @@
  * Model: gemini-2.5-pro (default)
  */
 
-import { GoogleGenerativeAI, type FunctionDeclaration, SchemaType } from '@google/generative-ai';
+import {
+  GoogleGenerativeAI,
+  SchemaType,
+  type Content,
+  type FunctionDeclaration,
+  type FunctionDeclarationSchemaProperty,
+  type Part,
+} from '@google/generative-ai';
 import type { ToolDef } from '../../../../src-shared/tools';
 import type { LLMProvider, Message, StreamDelta } from './index';
+import { handleStreamError } from './provider-error';
+import { SYSTEM_PROMPT } from './system-prompt';
 
 const DEFAULT_MODEL = 'gemini-2.5-pro';
 
-const SYSTEM_PROMPT = `You are ChatCut, an AI video editor. You edit video by calling tools. Always use the available tools to fulfill the user's request. Check the timeline state first with get_timeline_state if you need context about what's on the timeline.
-
-When using apply_effect, the parameters object must use the effect's specific parameter ID as the key:
-- brightness: { brightness: <number> } where 0 is normal, positive is brighter, negative is darker
-- contrast: { contrast: <number> } where 1.0 is normal
-- saturation: { saturation: <number> } where 1.0 is normal
-- gaussian_blur: { sigma: <number> }
-- opacity: { opacity: <number> } range 0 to 1
-- scale: { scale: <number> } where 1.0 is 100%
-- rotation: { degrees: <number> }
-
-You can omit clip_id — it defaults to the active/first clip.`;
-
-/** Map our parameter types to Gemini schema types. */
-function mapType(type: string): SchemaType {
-  switch (type) {
-    case 'string': return SchemaType.STRING;
-    case 'number': return SchemaType.NUMBER;
-    case 'boolean': return SchemaType.BOOLEAN;
-    case 'object': return SchemaType.OBJECT;
-    default: return SchemaType.STRING;
+/** Map one of our tool parameters to a Gemini schema property. */
+function toSchemaProperty(param: {
+  type: string;
+  description: string;
+  enum?: string[];
+}): FunctionDeclarationSchemaProperty {
+  if (param.enum) {
+    return {
+      type: SchemaType.STRING,
+      format: 'enum',
+      enum: param.enum,
+      description: param.description,
+    };
+  }
+  switch (param.type) {
+    case 'number':
+      return { type: SchemaType.NUMBER, description: param.description };
+    case 'boolean':
+      return { type: SchemaType.BOOLEAN, description: param.description };
+    case 'object':
+      // Free-form object parameter (e.g. apply_effect.parameters). The SDK's
+      // ObjectSchema type demands `properties`, but the Gemini API accepts a
+      // bare OBJECT declaration — and an empty properties map makes some
+      // models reject the schema. The cast preserves the wire format.
+      return {
+        type: SchemaType.OBJECT,
+        description: param.description,
+      } as FunctionDeclarationSchemaProperty;
+    default:
+      return { type: SchemaType.STRING, description: param.description };
   }
 }
 
 /** Convert our internal tool format to Gemini function declarations. */
 function convertTools(tools: ToolDef[]): FunctionDeclaration[] {
   return tools.map((tool) => {
-    const properties: Record<string, any> = {};
+    const properties: Record<string, FunctionDeclarationSchemaProperty> = {};
     const required: string[] = [];
 
     for (const [key, param] of Object.entries(tool.parameters)) {
-      const prop: any = {
-        type: mapType(param.type),
-        description: param.description,
-      };
-      if (param.enum) {
-        prop.enum = param.enum;
-      }
-      properties[key] = prop;
+      properties[key] = toSchemaProperty(param);
       if (param.required) {
         required.push(key);
       }
@@ -68,8 +79,8 @@ function convertTools(tools: ToolDef[]): FunctionDeclaration[] {
 }
 
 /** Convert internal messages to Gemini content format. */
-function convertMessages(messages: Message[]): Array<{ role: string; parts: any[] }> {
-  const result: Array<{ role: string; parts: any[] }> = [];
+function convertMessages(messages: Message[]): Content[] {
+  const result: Content[] = [];
 
   for (const msg of messages) {
     if (msg.role === 'system') continue;
@@ -82,7 +93,7 @@ function convertMessages(messages: Message[]): Array<{ role: string; parts: any[
     }
 
     // Handle block-based content
-    const parts: any[] = [];
+    const parts: Part[] = [];
     for (const block of msg.content) {
       if (block.type === 'text') {
         parts.push({ text: block.text });
@@ -171,15 +182,8 @@ export class GeminiProvider implements LLMProvider {
       }
 
       onDelta({ type: 'done' });
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || signal?.aborted) {
-        onDelta({ type: 'done' });
-        return;
-      }
-      onDelta({
-        type: 'error',
-        content: error?.message || 'Gemini API error',
-      });
+    } catch (error: unknown) {
+      handleStreamError(error, 'Gemini', onDelta, signal);
     }
   }
 }

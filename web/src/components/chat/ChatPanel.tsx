@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
 import { useSettingsStore } from "@/lib/store/settings-store";
+import { useGenerationStore } from "@/lib/store/generation-store";
+import { cancelGeneration } from "@/lib/tauri/bridge";
 import { runAgentLoop, type StreamDelta } from "@/lib/agent/loop";
 import type { ToolCallInfo } from "@/types/editor";
 import { ChatMessage } from "./ChatMessage";
@@ -29,6 +31,18 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Per-turn cancel-rollback snapshot (captured in sendMessage).
+  const turnRef = useRef<{
+    assistantMsgId: string;
+    cancelled: boolean;
+    editCountBefore: number;
+    tracks: import("@/types/editor").Track[];
+    composition: import("@/types/editor").Composition;
+    playback: import("@/types/editor").PlaybackState;
+    editHistory: import("@/lib/agent/types").EditNode[];
+    activeNodeId: string | null;
+  } | null>(null);
+
   const chatMessages = useEditorStore((s) => s.chatMessages);
   const isChatLoading = useEditorStore((s) => s.isChatLoading);
   const addChatMessage = useEditorStore((s) => s.addChatMessage);
@@ -38,17 +52,54 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
   const provider = useSettingsStore((s) => s.provider);
   const model = useSettingsStore((s) => s.model);
   const getActiveApiKey = useSettingsStore((s) => s.getActiveApiKey);
+  const generation = useGenerationStore((s) => s.active);
 
-  // Auto-scroll to bottom on new messages or tool-call updates
+  // ── Auto-follow scroll ──
+  // Follow the bottom ONLY while the user is pinned there — scrolling up to
+  // read pauses following until they return to the bottom. Scrolling is
+  // coalesced through requestAnimationFrame so rapid streaming deltas move
+  // the viewport once per frame instead of hard-snapping per token.
+  const pinnedToBottomRef = useRef(true);
+  const followRafRef = useRef(0);
+
   useEffect(() => {
-    if (scrollRef.current) {
-      const viewport = scrollRef.current.querySelector(
-        '[data-slot="scroll-area-viewport"]'
-      );
-      if (viewport) {
-        viewport.scrollTop = viewport.scrollHeight;
+    const viewport = scrollRef.current?.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    );
+    if (!viewport) return;
+    const onScroll = () => {
+      pinnedToBottomRef.current =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
+    };
+    viewport.addEventListener('scroll', onScroll, { passive: true });
+    return () => viewport.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Calm, fluid follow: ease scrollTop toward the bottom each frame while
+  // pinned, instead of snapping. The loop self-terminates once settled, and
+  // re-arms whenever messages change. User scrolling up unpins (above) and
+  // the loop stands down immediately.
+  useEffect(() => {
+    if (!pinnedToBottomRef.current) return;
+    const viewport = scrollRef.current?.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    );
+    if (!viewport) return;
+
+    cancelAnimationFrame(followRafRef.current);
+    const stepFollow = () => {
+      if (!pinnedToBottomRef.current) return;
+      const target = viewport.scrollHeight - viewport.clientHeight;
+      const delta = target - viewport.scrollTop;
+      if (Math.abs(delta) < 1) {
+        viewport.scrollTop = target;
+        return; // settled
       }
-    }
+      viewport.scrollTop += delta * 0.22;
+      followRafRef.current = requestAnimationFrame(stepFollow);
+    };
+    followRafRef.current = requestAnimationFrame(stepFollow);
+    return () => cancelAnimationFrame(followRafRef.current);
   }, [chatMessages]);
 
   // Auto-resize textarea up to a max height; scroll inside after that.
@@ -101,6 +152,21 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
 
       const abortController = new AbortController();
       abortRef.current = abortController;
+
+      // Snapshot for cancel-rollback: Escape/Stop mid-turn reverts every
+      // mutation this turn made (restorable via redo — the rollback itself
+      // is pushed as an undoable command).
+      const snapState = useEditorStore.getState();
+      turnRef.current = {
+        assistantMsgId,
+        cancelled: false,
+        editCountBefore: snapState.editHistory.length,
+        tracks: structuredClone(snapState.project.tracks),
+        composition: { ...snapState.project.composition },
+        playback: structuredClone(snapState.playback),
+        editHistory: structuredClone(snapState.editHistory),
+        activeNodeId: snapState.activeNodeId,
+      };
 
       let accumulatedText = "";
 
@@ -162,10 +228,14 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
                 break;
 
               case "done":
-                updateChatMessage(assistantMsgId, {
-                  content: accumulatedText || "Done.",
-                  isLoading: false,
-                });
+                // A cancelled turn already wrote its "Cancelled…" message —
+                // don't let the loop's final delta overwrite it.
+                if (!turnRef.current?.cancelled) {
+                  updateChatMessage(assistantMsgId, {
+                    content: accumulatedText || "Done.",
+                    isLoading: false,
+                  });
+                }
                 break;
             }
           },
@@ -180,6 +250,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
       } finally {
         setChatLoading(false);
         abortRef.current = null;
+        turnRef.current = null;
       }
     },
     [
@@ -203,8 +274,69 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
   );
 
   const handleAbort = useCallback(() => {
+    const turn = turnRef.current;
     abortRef.current?.abort();
-  }, []);
+    if (!turn || turn.cancelled) return;
+    turn.cancelled = true;
+
+    // Roll back every mutation this turn made (if any), as ONE undoable step.
+    const store = useEditorStore.getState();
+    const editsMade = store.editHistory.length - turn.editCountBefore;
+    if (editsMade > 0) {
+      const abortedState = {
+        tracks: structuredClone(store.project.tracks),
+        playback: structuredClone(store.playback),
+        editHistory: structuredClone(store.editHistory),
+        activeNodeId: store.activeNodeId,
+      };
+      useEditorStore.setState((state) => ({
+        project: {
+          ...state.project,
+          tracks: turn.tracks,
+          composition: turn.composition,
+          updatedAt: Date.now(),
+        },
+        playback: turn.playback,
+        editHistory: turn.editHistory,
+        activeNodeId: turn.activeNodeId,
+      }));
+      store.pushUndo({
+        description: `Cancelled agent turn (${editsMade} edit${editsMade > 1 ? "s" : ""} rolled back)`,
+        previousState: {
+          tracks: abortedState.tracks,
+          playback: abortedState.playback,
+          editHistory: abortedState.editHistory,
+          activeNodeId: abortedState.activeNodeId,
+        },
+        nextState: {
+          tracks: turn.tracks,
+          playback: turn.playback,
+          editHistory: turn.editHistory,
+          activeNodeId: turn.activeNodeId,
+        },
+      });
+    }
+    updateChatMessage(turn.assistantMsgId, {
+      content:
+        editsMade > 0
+          ? `Cancelled — rolled back ${editsMade} edit${editsMade > 1 ? "s" : ""}. (Redo restores them.)`
+          : "Cancelled.",
+      isLoading: false,
+    });
+  }, [updateChatMessage]);
+
+  // Escape cancels the running turn (ignores Esc while typing has no turn).
+  useEffect(() => {
+    if (!isChatLoading) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleAbort();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isChatLoading, handleAbort]);
 
   return (
     <div className="flex flex-col h-full min-w-0 bg-neutral-900">
@@ -249,7 +381,7 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
           {chatMessages.length === 0 && <EmptyState />}
 
           {chatMessages.map((msg) => (
-            <div key={msg.id} className="min-w-0">
+            <div key={msg.id} className="min-w-0 chat-message-in">
               <ChatMessage message={msg} />
               {/* Render tool call cards for assistant messages */}
               {msg.role === "assistant" &&
@@ -265,6 +397,28 @@ export function ChatPanel({ isFloating = false, onPopOut }: ChatPanelProps = {})
           ))}
         </div>
       </ScrollArea>
+
+      {/* Generation progress — mirrors the Rust pipeline while a clip generates */}
+      {generation && (
+        <div className="chat-message-in mx-3 mb-2 flex items-center gap-2.5 rounded-lg border border-neutral-800 bg-neutral-900/90 px-3 py-2 shadow-[0_2px_10px_rgba(0,0,0,0.28)]">
+          <div className="relative h-1.5 flex-1 min-w-0 rounded-full bg-neutral-800 overflow-hidden">
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-blue-500/80 transition-[width] duration-500"
+              style={{ width: `${Math.max(3, generation.percent)}%` }}
+            />
+          </div>
+          <span className="text-[11px] text-neutral-400 shrink-0 tabular-nums">
+            {generation.stage} · {Math.round(generation.percent)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => cancelGeneration(generation.id).catch(() => {})}
+            className="shrink-0 text-[11px] px-2 py-0.5 rounded-md bg-neutral-800 text-neutral-300 hover:bg-red-900/50 hover:text-red-200 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Input — multi-line, auto-resizing. Enter sends; Shift+Enter newline. */}
       <form

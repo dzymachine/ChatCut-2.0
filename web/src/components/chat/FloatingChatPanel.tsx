@@ -32,23 +32,6 @@ function clampToViewport(state: FloatState): FloatState {
   };
 }
 
-function readPersistedState(): FloatState {
-  if (typeof window === "undefined") return DEFAULT_FLOAT;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_FLOAT;
-    const parsed = JSON.parse(raw) as Partial<FloatState>;
-    return clampToViewport({
-      x: Number.isFinite(parsed.x) ? parsed.x! : DEFAULT_FLOAT.x,
-      y: Number.isFinite(parsed.y) ? parsed.y! : DEFAULT_FLOAT.y,
-      width: Math.max(MIN_WIDTH, parsed.width ?? DEFAULT_FLOAT.width),
-      height: Math.max(MIN_HEIGHT, parsed.height ?? DEFAULT_FLOAT.height),
-    });
-  } catch {
-    return DEFAULT_FLOAT;
-  }
-}
-
 /**
  * Floating wrapper for the chat panel — fixed-positioned, draggable by the
  * header, resizable from the bottom-right corner. Position and size persist
@@ -74,8 +57,12 @@ export function FloatingChatPanel({ children, onDock, title = "Chat", storageKey
       return DEFAULT_FLOAT;
     }
   });
+  // Drag handlers read the latest committed state through this ref.
+  // Synced in an effect (not during render) per the react-hooks/refs rule.
   const stateRef = useRef(state);
-  stateRef.current = state;
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // Persist on change
   useEffect(() => {
@@ -84,7 +71,7 @@ export function FloatingChatPanel({ children, onDock, title = "Chat", storageKey
     } catch {
       // ignore quota / disabled storage
     }
-  }, [state]);
+  }, [state, resolvedKey]);
 
   // Re-clamp if the window resizes (keeps panel from drifting off-screen).
   useEffect(() => {

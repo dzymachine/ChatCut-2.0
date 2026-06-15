@@ -16,7 +16,7 @@ pub struct TimelineState {
 pub struct CompositionInfo {
     pub width: u32,
     pub height: u32,
-    pub fps: u32,
+    pub fps: f64,
     pub duration: f64,
 }
 
@@ -58,8 +58,13 @@ pub struct MediaEntry {
 }
 
 /// Get the full timeline state from a project file.
+///
+/// v2 clips reference assets by id (no embedded path/name/type) — resolve
+/// those fields through the project's assets[] so the LLM always sees them.
 pub fn get_timeline_state(project_file: &ChatCutProjectFile) -> TimelineState {
     let project = &project_file.project;
+    let asset_by_id: std::collections::HashMap<&str, &crate::project::SerializedAsset> =
+        project.assets.iter().map(|a| (a.id.as_str(), a)).collect();
 
     TimelineState {
         composition: CompositionInfo {
@@ -79,17 +84,35 @@ pub fn get_timeline_state(project_file: &ChatCutProjectFile) -> TimelineState {
                 clips: track
                     .clips
                     .iter()
-                    .map(|clip| ClipInfo {
-                        id: clip.id.clone(),
-                        clip_type: clip.clip_type.clone(),
-                        source_file_name: clip.source_file_name.clone(),
-                        source_file_path: clip.source_file_path.clone(),
-                        source_start: clip.source_start,
-                        source_end: clip.source_end,
-                        timeline_start: clip.timeline_start,
-                        timeline_end: clip.timeline_end(),
-                        duration: clip.duration(),
-                        effect_count: clip.effects.len(),
+                    .map(|clip| {
+                        let asset = asset_by_id.get(clip.asset_id.as_str());
+                        let clip_type = if !clip.clip_type.is_empty() {
+                            clip.clip_type.clone()
+                        } else if track.track_type == "audio" {
+                            "audio".to_string()
+                        } else {
+                            asset.map(|a| a.kind.clone()).unwrap_or_else(|| "video".to_string())
+                        };
+                        ClipInfo {
+                            id: clip.id.clone(),
+                            clip_type,
+                            source_file_name: if clip.source_file_name.is_empty() {
+                                asset.map(|a| a.name.clone()).unwrap_or_default()
+                            } else {
+                                clip.source_file_name.clone()
+                            },
+                            source_file_path: if clip.source_file_path.is_empty() {
+                                asset.map(|a| a.path.clone()).unwrap_or_default()
+                            } else {
+                                clip.source_file_path.clone()
+                            },
+                            source_start: clip.source_start,
+                            source_end: clip.source_end,
+                            timeline_start: clip.timeline_start,
+                            timeline_end: clip.timeline_end(),
+                            duration: clip.duration(),
+                            effect_count: clip.effects.len(),
+                        }
                     })
                     .collect(),
                 muted: track.muted,
@@ -100,8 +123,24 @@ pub fn get_timeline_state(project_file: &ChatCutProjectFile) -> TimelineState {
     }
 }
 
-/// Get the media library (unique source files referenced in clips).
+/// Get the media library.
+///
+/// v2 projects carry an explicit assets[] — return it directly. v1 projects
+/// fall back to scanning unique source paths off clips.
 pub fn get_media_library(project_file: &ChatCutProjectFile) -> Vec<MediaEntry> {
+    if !project_file.project.assets.is_empty() {
+        return project_file
+            .project
+            .assets
+            .iter()
+            .map(|a| MediaEntry {
+                file_path: a.path.clone(),
+                file_name: a.name.clone(),
+                clip_type: a.kind.clone(),
+            })
+            .collect();
+    }
+
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
 

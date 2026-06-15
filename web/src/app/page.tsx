@@ -11,6 +11,7 @@ import { ProviderPicker } from "@/components/settings/ProviderPicker";
 import { ApiKeySetting } from "@/components/settings/ApiKeySetting";
 import { useEditorStore } from "@/lib/store/editor-store";
 import { useTauriStatus } from "@/hooks/useTauriStatus";
+import { useLocalStorageFlag } from "@/hooks/useLocalStorageFlag";
 import { saveProject, loadProject, startAutoSave, stopAutoSave } from "@/lib/project/serializer";
 import { useCallback, useEffect, useState } from "react";
 import { showToast } from "@/components/ui/toast-notification";
@@ -25,29 +26,10 @@ export default function EditorPage() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isChatFloating, setIsChatFloating] = useState(false);
-  const [isHistoryFloating, setIsHistoryFloating] = useState(false);
+  // Popout state persists across reloads (hydration-safe localStorage hook).
+  const [isChatFloating, setIsChatFloating] = useLocalStorageFlag("chatcut.chatFloating", false);
+  const [isHistoryFloating, setIsHistoryFloating] = useLocalStorageFlag("chatcut.historyFloating", false);
   const tauriStatus = useTauriStatus();
-
-  // Persist popout state across reloads.
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem("chatcut.chatFloating");
-      if (raw === "true") setIsChatFloating(true);
-      const rawH = window.localStorage.getItem("chatcut.historyFloating");
-      if (rawH === "true") setIsHistoryFloating(true);
-    } catch {
-      // ignore
-    }
-  }, []);
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("chatcut.chatFloating", String(isChatFloating));
-      window.localStorage.setItem("chatcut.historyFloating", String(isHistoryFloating));
-    } catch {
-      // ignore
-    }
-  }, [isChatFloating]);
 
   const handleEngineReady = useCallback(() => {
     setEngineReady(true);

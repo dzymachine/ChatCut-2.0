@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useEditorStore } from "@/lib/store/editor-store";
 import { cva } from "class-variance-authority";
 
@@ -26,10 +26,21 @@ import {
   exportVideo,
   getExportProgress,
   cancelExport,
+  cancelPreviewRenders,
   type ExportClip,
   type ExportSettings,
   type ExportProgress,
 } from "@/lib/tauri/bridge";
+import { useExportStatusStore } from "@/lib/store/export-status-store";
+
+/** Humanize an ETA in seconds: "8s left", "1m 20s left". */
+function formatEta(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+}
 
 type ExportFormat = "mp4" | "webm" | "mov";
 type VideoCodec = "h264" | "h265" | "vp9" | "prores";
@@ -127,10 +138,14 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     }
   }, [format, codec, audioCodec]);
 
-  // Get current resolution
-  const resolution = resolutionPreset < RESOLUTION_PRESETS.length - 1
-    ? RESOLUTION_PRESETS[resolutionPreset]
-    : { label: "Custom", width: customWidth, height: customHeight };
+  // Get current resolution (memoized — it feeds the export callback's deps)
+  const resolution = useMemo(
+    () =>
+      resolutionPreset < RESOLUTION_PRESETS.length - 1
+        ? RESOLUTION_PRESETS[resolutionPreset]
+        : { label: "Custom", width: customWidth, height: customHeight },
+    [resolutionPreset, customWidth, customHeight]
+  );
 
   // Effective export fps: explicit choice, else the composition (source) fps.
   const effectiveFps = fpsChoice > 0 ? fpsChoice : project.composition.fps;
@@ -144,17 +159,23 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     }
   }, [project.name, format]);
 
-  // Build export clips from the project
-  const buildExportClips = useCallback((): ExportClip[] => {
+  // Build export clips from the project. Clips whose source asset is missing
+  // (file moved/deleted) are collected so the export can refuse loudly
+  // instead of silently dropping content.
+  const buildExportClips = useCallback((): { clips: ExportClip[]; missing: string[] } => {
     const clips: ExportClip[] = [];
-    const mediaFiles = useEditorStore.getState().mediaFiles;
+    const missing: string[] = [];
+    const assets = useEditorStore.getState().assets;
 
     for (const track of project.tracks) {
       if (track.type !== "video") continue;
 
       for (const clip of track.clips) {
-        const mediaFile = mediaFiles.get(clip.sourceFileId);
-        if (!mediaFile) continue;
+        const mediaFile = assets.get(clip.assetId);
+        if (!mediaFile || mediaFile.status === 'missing' || mediaFile.status === 'error') {
+          missing.push(mediaFile?.name ?? `clip ${clip.id.slice(0, 6)}…`);
+          continue;
+        }
 
         // Use native file path for FFmpeg export (required on desktop)
         const sourcePath = mediaFile.nativePath || mediaFile.previewUrl;
@@ -179,7 +200,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
     // Sort by timeline position
     clips.sort((a, b) => a.timelineStart - b.timelineStart);
-    return clips;
+    return { clips, missing };
   }, [project.tracks]);
 
   // Start export
@@ -199,9 +220,10 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       return;
     }
 
-    const clips = buildExportClips();
+    const { clips, missing } = buildExportClips();
     console.log('[ExportDialog] buildExportClips returned', {
       count: clips.length,
+      missing,
       clips: clips.map((c) => ({
         sourcePath: c.sourcePath,
         sourceStart: c.sourceStart,
@@ -211,6 +233,12 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         effectCount: c.effects?.length ?? 0,
       })),
     });
+    if (missing.length > 0) {
+      setError(
+        `Cannot export — ${missing.length} clip source${missing.length > 1 ? 's are' : ' is'} missing: ${[...new Set(missing)].slice(0, 4).join(', ')}${missing.length > 4 ? '…' : ''}. Relink or remove those clips first.`,
+      );
+      return;
+    }
     if (clips.length === 0) {
       console.warn('[ExportDialog] BAIL: no clips to export');
       setError("No video clips to export. Add media to the timeline first.");
@@ -221,6 +249,10 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
     setError(null);
     setIsExporting(true);
+    // An export supersedes any live preview-proxy encode — kill it so the two
+    // FFmpeg jobs don't contend for the encoder, and stop new ones starting.
+    useExportStatusStore.getState().setExporting(true);
+    cancelPreviewRenders().catch(() => {});
     setProgress({
       percent: 0,
       frame: 0,
@@ -248,24 +280,36 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       const result = await exportVideo(clips, settings);
       console.log('[ExportDialog] exportVideo resolved', result);
 
-      // Start polling for progress
+      // Start polling for progress. A consecutive-failure breaker stops the
+      // interval if the backend goes unresponsive, so it can't spin forever
+      // (which would also strand isExporting → previews suppressed).
+      let consecutiveFailures = 0;
+      const stopPolling = () => {
+        if (progressIntervalRef.current) {
+          clearInterval(progressIntervalRef.current);
+          progressIntervalRef.current = null;
+        }
+        setIsExporting(false);
+        useExportStatusStore.getState().setExporting(false);
+      };
       progressIntervalRef.current = setInterval(async () => {
         try {
           const prog = await getExportProgress();
+          consecutiveFailures = 0;
           setProgress(prog);
 
           if (!prog.running) {
-            if (progressIntervalRef.current) {
-              clearInterval(progressIntervalRef.current);
-              progressIntervalRef.current = null;
-            }
             if (prog.error) {
               setError(prog.error);
             }
-            setIsExporting(false);
+            stopPolling();
           }
         } catch (err) {
           console.error("Failed to get export progress:", err);
+          if (++consecutiveFailures >= 5) {
+            setError("Lost contact with the export process. Check the output file manually.");
+            stopPolling();
+          }
         }
       }, 500);
     } catch (err) {
@@ -284,6 +328,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             : 'Export failed (no error message)';
       setError(msg);
       setIsExporting(false);
+      useExportStatusStore.getState().setExporting(false);
     }
   }, [outputPath, buildExportClips, format, codec, resolution, effectiveFps, quality, audioCodec, audioBitrate]);
 
@@ -299,6 +344,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       progressIntervalRef.current = null;
     }
     setIsExporting(false);
+    useExportStatusStore.getState().setExporting(false);
     setProgress(null);
   }, []);
 
@@ -308,6 +354,10 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       if (progressIntervalRef.current) {
         clearInterval(progressIntervalRef.current);
       }
+      // Don't strand the global flag if we unmount mid-export — otherwise the
+      // preview-proxy trigger stays suppressed forever. (The FFmpeg export
+      // keeps running in Rust; only the UI flag is reset.)
+      useExportStatusStore.getState().setExporting(false);
     };
   }, []);
 
@@ -491,12 +541,19 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                   style={{ width: `${progress.percent}%` }}
                 />
               </div>
-              {progress.frame > 0 && (
-                <div className="text-[10px] text-neutral-500">
-                  Frame {progress.frame}
-                  {progress.totalFrames > 0 ? ` / ${progress.totalFrames}` : ""}
-                </div>
-              )}
+              <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                <span>
+                  {progress.frame > 0 && (
+                    <>
+                      Frame {progress.frame}
+                      {progress.totalFrames > 0 ? ` / ${progress.totalFrames}` : ""}
+                    </>
+                  )}
+                </span>
+                {!isComplete && !progress.error && progress.running && progress.eta > 0 && (
+                  <span>{formatEta(progress.eta)} left</span>
+                )}
+              </div>
             </div>
           )}
 

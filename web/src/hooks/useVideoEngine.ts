@@ -27,12 +27,18 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { getVideoEngine, destroyVideoEngine } from "@/lib/engine/video-engine";
 import { useEditorStore } from "@/lib/store/editor-store";
+import { usePreviewProxy } from "./usePreviewProxy";
 
 export function useVideoEngine() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef(getVideoEngine());
   const [isReady, setIsReady] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Phase B: subscribe the preview-proxy trigger to the selected clip's recipe.
+  // Side-effect only here — the hook's { isRendering, lastError } return is
+  // plumbed to UI later (rendering-chip is a Claude Design follow-up).
+  usePreviewProxy();
 
   // Track whether the timeline has clips so we can detect transitions
   const hasClips = useEditorStore((s) =>
@@ -104,7 +110,7 @@ export function useVideoEngine() {
     }
     if (!firstVideoClip) return;
 
-    const mediaFile = state.mediaFiles.get(firstVideoClip.sourceFileId);
+    const mediaFile = state.assets.get(firstVideoClip.assetId);
     if (!mediaFile?.previewUrl) return;
 
     engine.loadSource(mediaFile.previewUrl).then(() => {

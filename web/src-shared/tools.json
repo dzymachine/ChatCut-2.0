@@ -105,7 +105,7 @@
     {
       "name": "apply_effect",
       "type": "mutation",
-      "description": "Apply a visual or audio effect to a clip.",
+      "description": "Apply ONE visual or audio effect from a fixed registry to a clip. Use this for simple, single-effect requests (e.g. 'add sepia', 'fade out the last 1s', 'rotate 15 degrees'). For requests that combine multiple FFmpeg filters, use custom filters not in this registry, or need a non-trivial filter graph (e.g. 'crush the blacks and add film grain', 'apply a teal-and-orange LUT then sharpen'), prefer `compose_recipe` — it can reach the full FFmpeg filter catalog via `list_filters` / `describe_filter`. Note: only `fade_in`, `fade_out`, `crop`, `vignette`, and CSS-mappable filters (blur, brightness, contrast, saturation, grayscale, sepia, hue_rotate) render in the live preview; other effects only become visible on export.",
       "parameters": {
         "clip_id": {
           "type": "string",
@@ -238,7 +238,7 @@
     {
       "name": "compose_recipe",
       "type": "mutation",
-      "description": "Compose an FFmpeg filter recipe and attach it to a clip. The recipe is a filter graph with nodes (filters + params) connected in sequence. Validates structure before attaching.",
+      "description": "SEED a new FFmpeg filter recipe on a clip that has none. If the clip ALREADY has a recipe, this tool errors — use append_to_recipe for additive asks (\"also add grain\", \"a bit warmer\") and refine_recipe ONLY when the user explicitly asks to simplify/redo the look. WORKFLOW: (0) try search_recipe_templates first — a seed template may already match the ask. (1) discover real filters with list_creative_filters (curated, with worked examples) or list_filters/describe_filter — do not invent filter names from memory. (2) Build nodes with filter+params (or raw for expression-heavy filters like curves). (3) Connections link input → first → … → last → output. The recipe is structurally validated AND dry-run through FFmpeg before attaching — on error, fix and retry. NOT in stock FFmpeg: vibrance, tonemap; substitutes: vibrance → eq+colorchannelmixer, warm/cool → curves/colorbalance. The live preview re-renders automatically a moment after the recipe attaches. Pass the user's ask as `prompt` so the look is saved to the learned template cache.",
       "parameters": {
         "clip_id": {
           "type": "string",
@@ -248,6 +248,10 @@
           "type": "object",
           "description": "Recipe object with 'nodes' array (each node has 'id', 'filter', 'params' or 'raw') and 'connections' array (each has 'from' and 'to' node IDs, using 'input'/'output' for endpoints).",
           "required": true
+        },
+        "prompt": {
+          "type": "string",
+          "description": "The user's originating ask, verbatim-ish (e.g. \"dreamy vintage sunset look\"). Recorded in the revision log and the learned template cache."
         }
       }
     },
@@ -259,6 +263,122 @@
         "recipe": {
           "type": "object",
           "description": "Recipe object to validate (same format as compose_recipe).",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "append_to_recipe",
+      "type": "mutation",
+      "description": "ADD nodes onto a clip's EXISTING recipe — the default tool for additive asks (\"also add grain\", \"now make it warmer\", \"add a vignette on top\"). Appends are strictly additive: existing nodes are NEVER modified or removed; your fragment is spliced between the current graph's end and the output. Fragment semantics: nodes = NEW nodes only (fresh ids — use get_recipe to see existing ids); connections may reference only the new node ids plus 'input' (= the END of the existing recipe) and 'output'. Omit connections to simply chain the new nodes in order. The MERGED graph is validated + FFmpeg dry-run before committing — on error the existing recipe is untouched; fix the fragment and retry. The live preview re-renders automatically.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "Target clip. If omitted, uses the currently selected clip."
+        },
+        "fragment": {
+          "type": "object",
+          "description": "{ nodes: RecipeNode[], connections?: RecipeConnection[] }. New nodes only; 'input' means the existing recipe's output.",
+          "required": true
+        },
+        "prompt": {
+          "type": "string",
+          "description": "The user's ask motivating this append — recorded in the revision log."
+        }
+      }
+    },
+    {
+      "name": "refine_recipe",
+      "type": "mutation",
+      "description": "REWRITE a clip's recipe wholesale — compaction or redo. Use ONLY when the user explicitly asks to simplify, clean up, tone down overall, or redo the look (e.g. \"simplify this\", \"too much, start the grade over\"). For additive changes use append_to_recipe instead. Provide the FULL replacement graph. Prior revisions are carried forward in the log and the prior graph remains recoverable via edit history. Validated + dry-run before committing.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "Target clip. If omitted, uses the currently selected clip."
+        },
+        "recipe": {
+          "type": "object",
+          "description": "The complete replacement recipe: { nodes, connections }.",
+          "required": true
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Why the rewrite (e.g. \"user asked to simplify\")."
+        }
+      }
+    },
+    {
+      "name": "get_recipe",
+      "type": "introspection",
+      "description": "Inspect a clip's current recipe: nodes (with the revision that added each), connections, the compiled FFmpeg filter string, and the revision log (compose/append/refine history with prompts). Call this BEFORE append_to_recipe to learn existing node ids and see how the look was built.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "Target clip. If omitted, uses the currently selected clip."
+        }
+      }
+    },
+    {
+      "name": "search_recipe_templates",
+      "type": "introspection",
+      "description": "Fuzzy-search the recipe template library (shipped seed looks + looks learned from this user's past sessions) by name/tags/description. Try this FIRST when the user asks for a named/stylistic look (\"vhs\", \"teal and orange\", \"film noir\", \"dreamy\") — apply a match via compose_recipe (verbatim or tweaked) instead of building from scratch.",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "description": "Style keywords, e.g. \"vhs retro\", \"warm film sunset\".",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "list_creative_filters",
+      "type": "introspection",
+      "description": "Curated catalog of high-value stock FFmpeg filters with what each is FOR and a worked example string (curves, colorbalance, lut3d, noise, tblend, lagfun, zoompan, the split+blend intensity-dial pattern, …). Ground your recipe composition here instead of guessing filter names/params.",
+      "parameters": {}
+    },
+    {
+      "name": "list_luts",
+      "type": "introspection",
+      "description": "List available 3D LUT (.cube) files — shipped looks (teal_orange, warm_film, cool_noir, vaporwave_pink, bleach_bypass) plus any user-supplied LUTs. Returns name + absolute path. Apply at full strength with a node {filter:'lut3d', params:{file:'<path>'}}… BUT paths contain characters FFmpeg parses, so prefer a raw node: raw: \"lut3d='<path>'\". For partial strength (the pro 'intensity slider'), use the split+blend pattern as ONE raw node: raw: \"split[__a][__b];[__b]lut3d='<path>'[__g];[__a][__g]blend=all_expr='A*(1-0.6)+B*0.6'\" (0.6 = 60% intensity).",
+      "parameters": {}
+    },
+    {
+      "name": "generate_video_clip",
+      "type": "mutation",
+      "description": "Generate an AI-restyled variant of a clip's footage via Runway video-to-video and ADD it to the timeline as a new clip (with a linked audio lane; generated audio is silent for now). Use for asks like \"AIfy this\", \"make this look like claymation/anime/cyberpunk\", \"generate a stylized version\". The source segment (capped at 10s) is extracted at proper resolution/bitrate, the prompt is automatically enriched with footage context (metadata + a frame caption), and the result is imported as a new asset — the ORIGINAL clip is never replaced. Generation takes 1–5 minutes; progress shows in the chat. Requires a Runway API key in Settings. Honest failure modes: missing key, segment too large, Runway rejection — report them to the user rather than retrying blindly.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "Source clip. If omitted, uses the currently selected clip."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "The style/transformation ask, e.g. \"clay stop-motion style, soft studio lighting\".",
+          "required": true
+        },
+        "duration_s": {
+          "type": "number",
+          "description": "Seconds of the clip to use, from its start (default: full trimmed length, capped at 10s)."
+        }
+      }
+    },
+    {
+      "name": "update_recipe_param",
+      "type": "mutation",
+      "description": "Overwrite parameter values on ONE existing recipe node in place (a tune, not an append) — used for precise dial adjustments (\"set the contrast node to 1.05\") and by the inline parameter sliders in the chat UI. The updated graph is FFmpeg dry-run validated before committing; recorded in the revision log as a 'tune'. For ADDING new effects use append_to_recipe; for full rewrites use refine_recipe.",
+      "parameters": {
+        "clip_id": {
+          "type": "string",
+          "description": "Target clip. If omitted, uses the currently selected clip."
+        },
+        "node_id": {
+          "type": "string",
+          "description": "The recipe node whose params to overwrite (see get_recipe).",
+          "required": true
+        },
+        "params": {
+          "type": "object",
+          "description": "Param name → new value map; merged over the node's existing params.",
           "required": true
         }
       }

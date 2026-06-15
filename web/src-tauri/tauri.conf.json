@@ -25,7 +25,10 @@
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost http://localhost:*; media-src 'self' blob: asset: https://asset.localhost http://localhost:* file://*; connect-src 'self' http://localhost:* https://asset.localhost asset://localhost https://*.googleapis.com https://*.groq.com https://api.runwayml.com; font-src 'self' data:",
-      "dangerousDisableAssetCspModification": ["script-src", "style-src"]
+      "dangerousDisableAssetCspModification": [
+        "script-src",
+        "style-src"
+      ]
     }
   },
   "bundle": {
@@ -45,7 +48,10 @@
       "wix": {
         "language": "en-US"
       }
-    }
+    },
+    "resources": [
+      "luts/*"
+    ]
   },
   "plugins": {
     "shell": {

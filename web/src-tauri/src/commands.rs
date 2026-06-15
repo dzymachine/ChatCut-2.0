@@ -165,3 +165,55 @@ pub fn check_ffmpeg() -> Result<String, String> {
         Err("FFmpeg found but returned an error.".to_string())
     }
 }
+
+/// One available .cube LUT file.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LutEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// List available 3D LUTs: shipped seeds (bundled resources) plus any
+/// user-supplied .cube files in <app-data>/luts/.
+#[tauri::command]
+pub fn list_luts(app_handle: tauri::AppHandle) -> Result<Vec<LutEntry>, String> {
+    use tauri::Manager;
+
+    fn scan(dir: std::path::PathBuf, entries: &mut Vec<LutEntry>) {
+        if let Ok(read) = std::fs::read_dir(&dir) {
+            for e in read.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("cube") {
+                    if let Some(stem) = p.file_stem().and_then(|x| x.to_str()) {
+                        entries.push(LutEntry {
+                            name: stem.to_string(),
+                            path: p.to_string_lossy().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut entries: Vec<LutEntry> = Vec::new();
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        scan(resource_dir.join("luts"), &mut entries);
+    }
+    if let Ok(app_data) = app_handle.path().app_data_dir() {
+        scan(app_data.join("luts"), &mut entries);
+    }
+
+    // Dev fallback: in `tauri dev` the resource dir may not include the
+    // bundle resources yet — scan the source luts/ dir next to Cargo.toml.
+    if entries.is_empty() {
+        scan(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("luts"),
+            &mut entries,
+        );
+    }
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.dedup_by(|a, b| a.name == b.name);
+    Ok(entries)
+}
